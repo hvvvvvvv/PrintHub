@@ -1,16 +1,24 @@
+#pragma once
+
 #include <cstdint>
 #include <TcpClient.h>
+#include <SocketHandle.h>
+#include <string>
 #include <thread>
 #include <queue>
 #include <mutex>
+#include <optional>
 #include <condition_variable>
+#include <set>
+#include <tuple>
+#include <vector>
 
 class PrintServer {
 	public:
 		PrintServer& operator=(const PrintServer&) = delete;
 		PrintServer(const PrintServer&) = delete;
 		PrintServer() = delete;
-		~PrintServer();
+		virtual ~PrintServer();
 		void Start();
 		void Stop();
 		void SetListenPort(uint16_t port);
@@ -24,17 +32,24 @@ class PrintServer {
 		
 		virtual void handleClient(TcpClient& client) = 0;
 	private:
-		void listenLoop(std::stop_token stopToken);
+		void listenLoop(std::stop_token stopToken, SOCKET listenSocket);
 		void workerThread(std::stop_token stopToken);
 
 		sockaddr_in m_listenAddr;
 		int m_minThreads;
-		SOCKET m_listenSocket = INVALID_SOCKET;
+		struct PendingClient {
+			UniqueSocket socket;
+			sockaddr_in address;
+		};
+
+		UniqueSocket m_listenSocket;
 
 		std::jthread m_acceptThread;
 		std::vector<std::jthread> m_workerThreads;
-		std::queue<std::tuple<SOCKET, sockaddr_in>> m_taskQueue;
+		std::queue<PendingClient> m_taskQueue;
+		std::set<SOCKET> m_activeSockets;
 		std::mutex m_queueMutex;
+		std::mutex m_activeSocketsMutex;
 		std::condition_variable_any m_condition;
 		bool m_shutdown;
 		std::mutex m_statusMutex;
@@ -45,9 +60,6 @@ class LPD : public PrintServer {
 		LPD(uint16_t port, int minThreads = 1);
 	protected:
 		void handleClient(TcpClient& client) override;
-	private:
-		
-		void handleWaitingPrintJob(std::string& queueName, TcpClient& client);
 };
 
 class RawPrinting : public PrintServer {
@@ -57,4 +69,3 @@ class RawPrinting : public PrintServer {
 		void handleClient(TcpClient& client) override;
 		std::string m_printerName;
 };
-

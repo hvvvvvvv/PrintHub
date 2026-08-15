@@ -2,6 +2,11 @@
 #include<fmt/format.h>
 
 namespace utility {
+	namespace {
+		constexpr DWORD kNoServiceArguments = 0;
+		constexpr char kStringTerminator = '\0';
+	}
+
 	ServiceManager::ServiceManager(const std::string& serviceName) {
 		m_serviceName = serviceName;
 		if (m_serviceName.empty()) {
@@ -48,7 +53,7 @@ namespace utility {
 		if (!serviceHandle) {
 			throw std::runtime_error(fmt::format("Failed to open service {}. Error code: {}", m_serviceName, GetLastError()));
 		}
-		if (!StartServiceA(serviceHandle, 0, nullptr)) {
+		if (!StartServiceA(serviceHandle, kNoServiceArguments, nullptr)) {
 			auto error = GetLastError();
 			if (error != ERROR_SERVICE_ALREADY_RUNNING) {
 				CloseServiceHandle(serviceHandle);
@@ -97,11 +102,11 @@ namespace utility {
 			for (const auto& dep : args.dependencies) {
 				if (!dep.empty()) {
 					deps.insert(deps.end(), dep.begin(), dep.end());
-					deps.push_back('\0');
+					deps.push_back(kStringTerminator);
 				}
 			}	
 		}
-		deps.push_back('\0');
+		deps.push_back(kStringTerminator);
 		auto serviceHandle = CreateServiceA(
 			m_serviceHandle,
 			m_serviceName.c_str(),
@@ -121,7 +126,7 @@ namespace utility {
 			CloseServiceHandle(serviceHandle);
 			return;
 		}
-		SERVICE_DESCRIPTIONA desc = {0};
+		SERVICE_DESCRIPTIONA desc{};
 		desc.lpDescription = const_cast<LPSTR>(args.description->c_str());
 		if (!ChangeServiceConfig2A(serviceHandle, SERVICE_CONFIG_DESCRIPTION, &desc)) {
 			CloseServiceHandle(serviceHandle);

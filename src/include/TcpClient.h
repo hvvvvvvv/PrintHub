@@ -1,4 +1,5 @@
 #include <winsock2.h>
+#include <SocketHandle.h>
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <cstdint>
@@ -11,8 +12,12 @@
 class TcpClient {
     public:
         using BufferCallback = std::function<void(const char *data, size_t size)>;
-        TcpClient(SOCKET socket, const sockaddr_in &addr);
+        TcpClient(UniqueSocket socket, const sockaddr_in &addr);
         ~TcpClient();
+        TcpClient(const TcpClient&) = delete;
+        TcpClient& operator=(const TcpClient&) = delete;
+        TcpClient(TcpClient&&) noexcept = default;
+        TcpClient& operator=(TcpClient&&) noexcept = default;
         void Write(const std::string &data);
         void Write(const char data);
         void Read(size_t size, BufferCallback callback);
@@ -21,7 +26,7 @@ class TcpClient {
         std::string Addr() const;
         uint16_t Port() const;
     private:
-        SOCKET m_socket;
+        UniqueSocket m_socket;
         std::string leftoverBuffer;
         std::string m_addr;
         uint16_t m_port;

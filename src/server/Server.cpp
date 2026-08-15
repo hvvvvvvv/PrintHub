@@ -1,188 +1,189 @@
-﻿#include <Server.h>
+#include <Server.h>
+#include <spdlog/spdlog.h>
 
 #pragma warning(disable:4996)
 
+namespace {
+
+constexpr int kSocketOptionEnabled = 1;
+constexpr int kInetPtonSuccess = 1;
+
+} // namespace
+
 PrintServer::PrintServer(uint16_t port, int minThreads) {
-	m_shutdown = true;
-	m_listenAddr = { 0 };
-	m_listenAddr.sin_family = AF_INET;
-	m_listenAddr.sin_addr.s_addr = INADDR_ANY;
-	SetListenPort(port);
-	SetMinThreads(minThreads);
+    m_listenAddr = {};
+    m_listenAddr.sin_family = AF_INET;
+    m_listenAddr.sin_addr.s_addr = INADDR_ANY;
+    SetListenPort(port);
+    SetMinThreads(minThreads);
+    m_shutdown = true;
 }
 
 PrintServer::~PrintServer() {
-	Stop();
-	if (m_listenSocket != INVALID_SOCKET) {
-		closesocket(m_listenSocket);
-	}
+    Stop();
 }
 
 void PrintServer::SetListenAddr(const std::string& addr) {
-	m_listenAddr.sin_addr.s_addr = inet_addr(addr.c_str());
-	if (m_listenAddr.sin_addr.s_addr == INADDR_NONE) {
-		throw std::invalid_argument("Invalid IP address format");
-	}
+    if (inet_pton(AF_INET, addr.c_str(), &m_listenAddr.sin_addr) != kInetPtonSuccess) {
+        throw std::invalid_argument("Invalid IPv4 listen address");
+    }
 }
 
 void PrintServer::SetListenPort(uint16_t port) {
-	if (port == 0) {
-		throw std::invalid_argument("Port number cannot be zero");
-	}
-	m_listenAddr.sin_port = htons(port);
+    if (port == 0) {
+        throw std::invalid_argument("Port number cannot be zero");
+    }
+    m_listenAddr.sin_port = htons(port);
 }
 
 void PrintServer::SetMinThreads(int minThreads) {
-	if (minThreads < 1) {
-		throw std::invalid_argument("Minimum threads must be at least 1");
-	}
-	m_minThreads = minThreads;
+    if (minThreads < 1) {
+        throw std::invalid_argument("Worker thread count must be at least 1");
+    }
+    m_minThreads = minThreads;
 }
 
 std::string PrintServer::GetListenAddr() const {
-	return inet_ntoa(m_listenAddr.sin_addr);
+    char addr[INET_ADDRSTRLEN]{};
+    return inet_ntop(AF_INET, &m_listenAddr.sin_addr, addr, sizeof(addr)) ? addr : "<invalid>";
 }
 
 uint16_t PrintServer::GetListenPort() const {
-	return ntohs(m_listenAddr.sin_port);
+    return ntohs(m_listenAddr.sin_port);
 }
 
 int PrintServer::GetMinThreads() const {
-	return m_minThreads;
+    return m_minThreads;
 }
 
 void PrintServer::Start() {
-	std::lock_guard<std::mutex> lock(m_statusMutex);
-	if (!m_shutdown) {
-		return;
-	}	
-	WSADATA wsaData;
-	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-		throw std::system_error(WSAGetLastError(), std::system_category(), "WSAStartup failed");
-	}
+    std::lock_guard<std::mutex> lock(m_statusMutex);
+    if (!m_shutdown) {
+        return;
+    }
 
-	m_listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (m_listenSocket == INVALID_SOCKET) {
-		WSACleanup();
-		throw std::system_error(WSAGetLastError(), std::system_category(), "Socket creation failed");
-	}
+    m_listenSocket.reset(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+    if (m_listenSocket.get() == INVALID_SOCKET) {
+        throw std::system_error(WSAGetLastError(), std::system_category(), "Socket creation failed");
+    }
 
-	// 设置地址重用选项（防止 bind 失败）
-	int yes = 1;
-	if (setsockopt(m_listenSocket, SOL_SOCKET, SO_REUSEADDR,
-		reinterpret_cast<char*>(&yes), sizeof(yes)) == SOCKET_ERROR) {
-		closesocket(m_listenSocket);
-		WSACleanup();
-		throw std::system_error(WSAGetLastError(), std::system_category(), "setsockopt failed");
-	}
+    const int reuseAddress = kSocketOptionEnabled;
+    const auto failStart = [this](const char* message) {
+        const auto error = WSAGetLastError();
+        m_listenSocket.reset();
+        throw std::system_error(error, std::system_category(), message);
+    };
+    if (setsockopt(m_listenSocket.get(), SOL_SOCKET, SO_REUSEADDR,
+            reinterpret_cast<const char*>(&reuseAddress), sizeof(reuseAddress)) == SOCKET_ERROR) {
+        failStart("setsockopt failed");
+    }
+    if (bind(m_listenSocket.get(), reinterpret_cast<sockaddr*>(&m_listenAddr), sizeof(m_listenAddr)) == SOCKET_ERROR) {
+        failStart("Bind failed");
+    }
+    if (listen(m_listenSocket.get(), SOMAXCONN) == SOCKET_ERROR) {
+        failStart("Listen failed");
+    }
 
-	if (bind(m_listenSocket, reinterpret_cast<sockaddr*>(&m_listenAddr), sizeof(m_listenAddr)) == SOCKET_ERROR) {
-		closesocket(m_listenSocket);
-		WSACleanup();
-		throw std::system_error(WSAGetLastError(), std::system_category(), "Bind failed");
-	}
-
-	if (listen(m_listenSocket, SOMAXCONN) == SOCKET_ERROR) {
-		closesocket(m_listenSocket);
-		WSACleanup();
-		throw std::system_error(WSAGetLastError(), std::system_category(), "Listen failed");
-	}
-
-	m_workerThreads.clear();
-	auto numThreads = min(m_minThreads, static_cast<int>(std::thread::hardware_concurrency()));
-	
-	for (int i = 0; i < m_minThreads; ++i) {
-		m_workerThreads.emplace_back([this](std::stop_token st) {
-			workerThread(st);
-		});
-	}
-	m_acceptThread = std::jthread([this](std::stop_token st) {
-		listenLoop(st);
-	});
-	m_shutdown = false;
-	
+    m_workerThreads.clear();
+    for (int i = 0; i < m_minThreads; ++i) {
+        m_workerThreads.emplace_back([this](std::stop_token stopToken) { workerThread(stopToken); });
+    }
+    const auto listenSocket = m_listenSocket.get();
+    m_acceptThread = std::jthread([this, listenSocket](std::stop_token stopToken) { listenLoop(stopToken, listenSocket); });
+    m_shutdown = false;
 }
 
 void PrintServer::Stop() {
-	std::lock_guard<std::mutex> lock(m_statusMutex);
-	if (m_shutdown) {
-		return;
-	}
-	// 关闭监听套接字（会中断 accept 调用）
-	if (m_listenSocket != INVALID_SOCKET) {
-		closesocket(m_listenSocket);
-		m_listenSocket = INVALID_SOCKET;
-	}
+    std::lock_guard<std::mutex> lock(m_statusMutex);
+    if (m_shutdown) {
+        return;
+    }
 
-	m_acceptThread.request_stop(); // 请求停止接受线程
-	m_acceptThread.join(); // 等待接受线程退出
+    m_listenSocket.reset();
+    {
+        std::lock_guard<std::mutex> activeLock(m_activeSocketsMutex);
+        for (const auto socket : m_activeSockets) {
+            shutdown(socket, SD_BOTH);
+        }
+    }
 
-	for (auto& thread : m_workerThreads) {
-		thread.request_stop();
-		thread.join();
-	}
-	m_workerThreads.clear();
+    m_acceptThread.request_stop();
+    if (m_acceptThread.joinable()) {
+        m_acceptThread.join();
+    }
+    for (auto& thread : m_workerThreads) {
+        thread.request_stop();
+    }
+    for (auto& thread : m_workerThreads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    m_workerThreads.clear();
 
-	{
-		std::lock_guard<std::mutex> lock(m_queueMutex);
-		while (!m_taskQueue.empty()) {
-			closesocket(std::get<SOCKET>(m_taskQueue.front())); // 关闭未处理的套接字
-			m_taskQueue.pop();
-		}
-	}
-	WSACleanup();
-	m_shutdown = true;
+    {
+        std::lock_guard<std::mutex> queueLock(m_queueMutex);
+        std::queue<PendingClient> emptyQueue;
+        m_taskQueue.swap(emptyQueue);
+    }
+    m_shutdown = true;
 }
 
-void PrintServer::listenLoop(std::stop_token stopToken) {
-	while (!stopToken.stop_requested()) {
-		sockaddr_in clientAddr = { 0 };
-		int addrLen = sizeof(clientAddr);
-		SOCKET clientSocket = accept(m_listenSocket, (struct sockaddr*)&clientAddr, &addrLen);
-		if (clientSocket == INVALID_SOCKET) {
-			int err = WSAGetLastError();
-			if (err == WSAEINTR || err == WSAENOTSOCK) {
-				break; // 正常关闭
-			}
-			continue; // 其他错误继续尝试
-		}
-
-		// 将新连接加入任务队列
-		{
-			std::lock_guard<std::mutex> lock(m_queueMutex);
-			m_taskQueue.push(std::make_tuple(clientSocket, clientAddr));
-		}
-		m_condition.notify_one();
-	}
+void PrintServer::listenLoop(std::stop_token stopToken, SOCKET listenSocket) {
+    while (!stopToken.stop_requested()) {
+        sockaddr_in clientAddr{};
+        int addrLen = sizeof(clientAddr);
+        UniqueSocket clientSocket(accept(listenSocket, reinterpret_cast<sockaddr*>(&clientAddr), &addrLen));
+        if (clientSocket.get() == INVALID_SOCKET) {
+            const auto error = WSAGetLastError();
+            if (stopToken.stop_requested() || error == WSAEINTR || error == WSAENOTSOCK || error == WSAEINVAL) {
+                return;
+            }
+            spdlog::warn("accept failed with WSA error {}", error);
+            continue;
+        }
+        {
+            std::lock_guard<std::mutex> queueLock(m_queueMutex);
+            m_taskQueue.push(PendingClient{ std::move(clientSocket), clientAddr });
+        }
+        m_condition.notify_one();
+    }
 }
 
 void PrintServer::workerThread(std::stop_token stopToken) {
-	while (!stopToken.stop_requested()) {
-		SOCKET clientSocket = INVALID_SOCKET;
-		sockaddr_in clientAddr = { 0 };
+    while (!stopToken.stop_requested()) {
+        PendingClient pendingClient;
+        {
+            std::unique_lock<std::mutex> queueLock(m_queueMutex);
+            const auto hasData = m_condition.wait(queueLock, stopToken, [this] { return !m_taskQueue.empty(); });
+            if (!hasData) {
+                continue;
+            }
+            pendingClient = std::move(m_taskQueue.front());
+            m_taskQueue.pop();
+        }
 
-		// 等待新任务或关闭信号
-		std::unique_lock<std::mutex> lock(m_queueMutex);
-		auto hasData = m_condition.wait(lock, stopToken, [this]() {
-			return !m_taskQueue.empty();
-		});
-		if (!hasData) {
-			lock.unlock();
-			continue; // 停止信号触发，退出线程
-		}
-		clientSocket = std::get<SOCKET>(m_taskQueue.front());
-		clientAddr = std::get<sockaddr_in>(m_taskQueue.front());
-		m_taskQueue.pop();
-		lock.unlock();
-		
-		// 处理客户端连接
-		try {
-			auto client = TcpClient(clientSocket, clientAddr);
-			handleClient(client);
-		}
-		catch (...) { }
-
-		// clientSocket 的生命周期由 TcpClient 管理并在其析构函数中自动 closesocket
-		clientSocket = INVALID_SOCKET;
-	}
+        const auto clientSocket = pendingClient.socket.get();
+        const auto clientAddr = pendingClient.address;
+        std::optional<TcpClient> client;
+        try {
+            {
+                std::lock_guard<std::mutex> activeLock(m_activeSocketsMutex);
+                m_activeSockets.insert(clientSocket);
+            }
+            client.emplace(std::move(pendingClient.socket), clientAddr);
+            handleClient(*client);
+        }
+        catch (const std::exception& e) {
+            char addr[INET_ADDRSTRLEN]{};
+            spdlog::warn("Client {}:{} failed: {}", inet_ntop(AF_INET, &clientAddr.sin_addr, addr, sizeof(addr)), ntohs(clientAddr.sin_port), e.what());
+        }
+        catch (...) {
+            spdlog::warn("Client worker failed with an unknown error");
+        }
+        {
+            std::lock_guard<std::mutex> activeLock(m_activeSocketsMutex);
+            m_activeSockets.erase(clientSocket);
+        }
+    }
 }

@@ -11,10 +11,24 @@
 #include <conio.h>
 #include <algorithm>
 #include <Arguments.hpp>
+#include <NetworkRuntime.h>
+#include <SnmpRejectServer.h>
 
+namespace {
+
+constexpr auto kLogRotationHour = 0;
+constexpr auto kLogRotationMinute = 0;
+constexpr auto kLogRetentionDays = 7;
+constexpr auto kLogFlushInterval = std::chrono::seconds(3);
+constexpr DWORD kServiceStatusWaitHintMs = 15000;
+constexpr DWORD kInitialServiceCheckpoint = 1;
+
+} // namespace
 
 std::atomic<bool> g_shutdown = false;
 std::atomic<int> g_servExitCode = EXIT_SUCCESS;
+SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
+std::atomic<DWORD> g_serviceCheckpoint = kInitialServiceCheckpoint;
 const std::unique_ptr<const Arguments> g_args = []() {
 	auto args = std::make_unique<Arguments>();
 	try {
@@ -35,7 +49,7 @@ static void setupLogger(spdlog::level::level_enum level) {
 	if (!std::filesystem::exists(logDir)) {
 		std::filesystem::create_directories(logDir);
 	}
-	auto fileSink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(logDir.append(logFile).string(), 0, 0, false, 7);
+	auto fileSink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(logDir.append(logFile).string(), kLogRotationHour, kLogRotationMinute, false, kLogRetentionDays);
 	fileSink->set_level(spdlog::level::trace);
 	spdlog::default_logger()->sinks().push_back(fileSink);
 
@@ -43,7 +57,7 @@ static void setupLogger(spdlog::level::level_enum level) {
 
 	spdlog::set_level(level);
 
-	spdlog::flush_every(std::chrono::seconds(3));
+	spdlog::flush_every(kLogFlushInterval);
 	
 }
 
@@ -131,10 +145,27 @@ static BOOL WINAPI consoleHandler(DWORD ctrlType) {
 	}
 }
 
+static void reportServiceStatus(DWORD state, DWORD win32ExitCode = NO_ERROR, DWORD serviceExitCode = 0, DWORD waitHint = 0) {
+	if (!g_serviceStatusHandle) {
+		return;
+	}
+	SERVICE_STATUS status{};
+	status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+	status.dwCurrentState = state;
+	status.dwControlsAccepted = state == SERVICE_RUNNING ? SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN : 0;
+	status.dwWin32ExitCode = win32ExitCode;
+	status.dwServiceSpecificExitCode = serviceExitCode;
+	status.dwWaitHint = waitHint;
+	status.dwCheckPoint = (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING)
+		? g_serviceCheckpoint.fetch_add(1) : 0;
+	SetServiceStatus(g_serviceStatusHandle, &status);
+}
+
 static DWORD WINAPI svcCtrlHandler(DWORD dwControl, DWORD, LPVOID, LPVOID) {
 	switch (dwControl) {
 		case SERVICE_CONTROL_STOP:
 		case SERVICE_CONTROL_SHUTDOWN: {
+			reportServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
 			g_shutdown.store(true);
 			g_shutdown.notify_all();
 			spdlog::info("Service stopping...");
@@ -155,14 +186,22 @@ static int mainRun() {
 	spdlog::info("Build time: {}", __TIME__);
 
 	try {
+		WinsockRuntime winsockRuntime;
 		auto servers = createRawServers();
 		if (servers.empty()) {
 			spdlog::warn("No servers configured, exiting.");
 			return 1;
 		}
 		for (auto& server : servers) {
+			server->SetListenAddr(g_args->ListenAddress);
 			server->Start();
 			spdlog::info("Server started on {}:{}", server->GetListenAddr(), server->GetListenPort());
+		}
+		std::optional<SnmpRejectServer> snmpRejectServer;
+		if (g_args->SnmpReject) {
+			snmpRejectServer.emplace(g_args->ListenAddress);
+			snmpRejectServer->Start();
+			spdlog::info("SNMP reject server started on {}:{}", g_args->ListenAddress, SnmpRejectServer::PORT);
 		}
 
 		while (!g_shutdown.load()) {
@@ -172,6 +211,10 @@ static int mainRun() {
 			server->Stop();
 			spdlog::info("server stopped on {}:{}", server->GetListenAddr(), server->GetListenPort());
 		}
+		if (snmpRejectServer.has_value()) {
+			snmpRejectServer->Stop();
+			spdlog::info("SNMP reject server stopped on {}:{}", g_args->ListenAddress, SnmpRejectServer::PORT);
+		}
 	}
 	catch (const std::exception& e) {
 		spdlog::error("Error: {}", e.what());
@@ -180,46 +223,38 @@ static int mainRun() {
 	return 0;
 }
 
-static VOID WINAPI svcMain(DWORD dwArgc, LPTSTR* lpszArgv) {
-	auto statusHandle = RegisterServiceCtrlHandlerEx(const_cast<LPSTR>(""), svcCtrlHandler, NULL);
-	if (statusHandle == NULL) {
+static VOID WINAPI svcMain(DWORD, LPTSTR*) {
+	g_serviceStatusHandle = RegisterServiceCtrlHandlerExA(PROJECT_NAME, svcCtrlHandler, nullptr);
+	if (g_serviceStatusHandle == nullptr) {
 		spdlog::error("Failed to register service control handler: {}", GetLastError());
 		return;
 	}
-	LPSERVICE_STATUS currentStatus = new SERVICE_STATUS();
-	currentStatus->dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-	currentStatus->dwWin32ExitCode = NO_ERROR;
-	currentStatus->dwServiceSpecificExitCode = NO_ERROR;
-	currentStatus->dwWaitHint = 0;
-	currentStatus->dwCurrentState = SERVICE_RUNNING;
-	currentStatus->dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
-	SetServiceStatus(statusHandle, currentStatus);
-
-	if (g_args->ServiceOperation.has_value() || mainRun()) {
-		currentStatus->dwCurrentState = SERVICE_STOPPED;
-		currentStatus->dwWin32ExitCode = ERROR_SERVICE_SPECIFIC_ERROR;
-		currentStatus->dwServiceSpecificExitCode = 1; // Custom error code
-		SetServiceStatus(statusHandle, currentStatus);
-		g_servExitCode.store(currentStatus->dwWin32ExitCode);
-		delete currentStatus;
-		return;
+	reportServiceStatus(SERVICE_START_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
+	reportServiceStatus(SERVICE_RUNNING);
+	const auto result = g_args->ServiceOperation.has_value() ? EXIT_FAILURE : mainRun();
+	g_servExitCode.store(result);
+	if (result == EXIT_SUCCESS) {
+		reportServiceStatus(SERVICE_STOPPED);
 	}
-
-	currentStatus->dwControlsAccepted = NULL;
-	currentStatus->dwCurrentState = SERVICE_STOPPED;
-	currentStatus->dwWin32ExitCode = NO_ERROR;
-	SetServiceStatus(statusHandle, currentStatus);
-	delete currentStatus;
+	else {
+		reportServiceStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, static_cast<DWORD>(result));
+	}
+	g_serviceStatusHandle = nullptr;
 }
 
 int main(int argc, char* argv[]) {
 	setupLogger(g_args->LogLevel);
 	spdlog::debug("Parsed arguments: \n{}", g_args->Dump());
-	SERVICE_TABLE_ENTRY DispatchTable[] = {
-		{ const_cast<LPSTR>(""), (LPSERVICE_MAIN_FUNCTION)svcMain},
+	SERVICE_TABLE_ENTRYA DispatchTable[] = {
+		{ const_cast<LPSTR>(PROJECT_NAME), svcMain},
 		{ NULL, NULL }
 	};
-	if(!StartServiceCtrlDispatcher(DispatchTable) && GetLastError() == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
+	const auto dispatched = StartServiceCtrlDispatcherA(DispatchTable);
+	if (dispatched) {
+		return g_servExitCode.load();
+	}
+	const auto dispatcherError = GetLastError();
+	if (dispatcherError == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
 		if(g_args->ServiceOperation.has_value()) {
 			if(!utility::IsRunAsAdmin()) {
 				spdlog::error("This operation requires administrative privileges. Please run as administrator.");
@@ -236,10 +271,7 @@ int main(int argc, char* argv[]) {
 		}
 		SetConsoleCtrlHandler(consoleHandler, TRUE);
 		return mainRun();
-	} else if(GetLastError() == NOERROR) {
-		return g_servExitCode.load();
-	} else {
-		spdlog::error("Failed to start service control dispatcher: {}", GetLastError());
-		return 1;
 	}
+	spdlog::error("Failed to start service control dispatcher: {}", dispatcherError);
+	return 1;
 }

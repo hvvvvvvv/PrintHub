@@ -1,28 +1,41 @@
-#include <string>
-#include <windows.h>
-#include <fmt/format.h>
-#include <minwindef.h>
-#include <winspool.h>
-#include <spdlog/spdlog.h>
+#pragma once
 
-class PrinterJob {
+#include <cstddef>
+#include <memory>
+#include <stdexcept>
+#include <string>
+
+#include <fmt/format.h>
+#include <windows.h>
+
+#include <PrintJob.h>
+
+class PrinterJob final : public IPrintJob {
     public:
         PrinterJob(const std::string& printerName, const std::string& docName);
-        ~PrinterJob();
-        void Write(char *data, DWORD size);
-        void SetDocName(const std::string &docName);
-        void Clear();
-        void Print();
-        DWORD GetBytesWritten() const { return m_bytesWritten; }
+        ~PrinterJob() override;
+        PrinterJob(const PrinterJob&) = delete;
+        PrinterJob& operator=(const PrinterJob&) = delete;
+        void Write(const char* data, size_t size) override;
+        void SetDocumentName(const std::string& docName) override;
+        void Cancel() override;
+        void Commit() override;
+        size_t GetBytesWritten() const override { return m_bytesWritten; }
     private:
         std::string m_printerName;
         std::string m_dataType;
         std::string m_docName;
-        HANDLE m_hPrinter;
-        DWORD m_jobId;
-        DWORD m_bytesWritten = 0;
+        HANDLE m_hPrinter = nullptr;
+        DWORD m_jobId = 0;
+        size_t m_bytesWritten = 0;
 
-        void m_startDocPrinter();
+        void startDocPrinter();
+};
+
+class WinspoolPrinterJobFactory final : public IPrinterJobFactory {
+public:
+    std::unique_ptr<IPrintJob> Create(const std::string& printerName,
+        const std::string& documentName) override;
 };
 
 class PrinterJobError : public std::runtime_error {

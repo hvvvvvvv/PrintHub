@@ -6,7 +6,7 @@
 constexpr auto PROJECT_NAME = "@PROJECT_NAME@";
 constexpr auto PROJECT_VERSION = "@PROJECT_VERSION@";
 
-constexpr DWORD RECV_TIMEOUT = 3000;
-constexpr size_t MAX_RECV_BUFFER_SIZE = 4096;
-constexpr size_t MAX_RECV_SIZE = 1024 * 1024 * 100;  // 100MB
-static_assert(MAX_RECV_BUFFER_SIZE > 0 && MAX_RECV_BUFFER_SIZE <= INT_MAX, "Value must be between 0 and INT_MAX");
+constexpr DWORD RECEIVE_TIMEOUT_MS = 3000;
+constexpr size_t RECEIVE_BUFFER_SIZE_BYTES = 4096;
+constexpr size_t MAX_COMMAND_SIZE_BYTES = 1024 * 1024 * 100;  // 100 MiB
+static_assert(RECEIVE_BUFFER_SIZE_BYTES > 0 && RECEIVE_BUFFER_SIZE_BYTES <= INT_MAX, "Value must be between 0 and INT_MAX");

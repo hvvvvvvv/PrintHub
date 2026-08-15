@@ -13,12 +13,12 @@
 namespace utility {
 	inline std::optional<std::string> GetDefaultPrinterName() {
 		DWORD size = 0;  
-		GetDefaultPrinter(nullptr, &size);  // Use GetDefaultPrinterA instead of GetDefaultPrinter
+		GetDefaultPrinterA(nullptr, &size);
 		if (size == 0) {  
 			return std::nullopt;
 		}  
 		std::string printerName(size, '\0');
-		if (GetDefaultPrinterA(printerName.data(), &size) && size > 100) {  
+		if (GetDefaultPrinterA(printerName.data(), &size) && size > 0) {
 			printerName.pop_back();
 			return printerName;
 		}  
@@ -37,18 +37,21 @@ namespace utility {
 	inline std::optional<std::string> GetPrinterNameFromShareName(const std::string& shareName) {
 		DWORD needed = 0, returned = 0;
 		DWORD flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
-		EnumPrintersW(flags, nullptr, 2, nullptr, 0, &needed, &returned);
+		EnumPrintersA(flags, nullptr, 2, nullptr, 0, &needed, &returned);
 		if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
 			return std::nullopt;
 		}
 		std::vector<BYTE> buffer(needed);
-		if (!EnumPrinters(flags, nullptr, 2, buffer.data(), needed, &needed, &returned)) {
+		if (!EnumPrintersA(flags, nullptr, 2, buffer.data(), needed, &needed, &returned)) {
 			return std::nullopt;
 		}
 
-		auto* printers = reinterpret_cast<PRINTER_INFO_2*>(buffer.data());
+		auto* printers = reinterpret_cast<PRINTER_INFO_2A*>(buffer.data());
 		for (DWORD i = 0; i < returned; ++i) {
-			if (printers[i].pPrinterName && shareName == printers[i].pShareName) {
+			if (printers[i].pPrinterName && printers[i].pShareName && shareName == printers[i].pShareName) {
+				return std::string(printers[i].pPrinterName);
+			}
+			if (printers[i].pPrinterName && shareName == printers[i].pPrinterName) {
 				return std::string(printers[i].pPrinterName);
 			}
 		}
