@@ -1,0 +1,12 @@
+#pragma once
+#include <Windows.h>
+#include <cstdint>
+#include <climits>
+
+constexpr auto PROJECT_NAME = "@PROJECT_NAME@";
+constexpr auto PROJECT_VERSION = "@PROJECT_VERSION@";
+
+constexpr DWORD RECV_TIMEOUT = 3000;
+constexpr size_t MAX_RECV_BUFFER_SIZE = 4096;
+constexpr size_t MAX_RECV_SIZE = 1024 * 1024 * 100;  // 100MB
+static_assert(MAX_RECV_BUFFER_SIZE > 0 && MAX_RECV_BUFFER_SIZE <= INT_MAX, "Value must be between 0 and INT_MAX");

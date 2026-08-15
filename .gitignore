@@ -1,0 +1,29 @@
+# Visual Studio workspace and user state
+.vs/
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+
+# CMake and generated build artifacts
+/out/
+/build/
+/install/
+/tools/vcpkg/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+
+# Generated project configuration
+/src/include/config.h
+
+# Native build and diagnostic artifacts
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.obj
+*.log

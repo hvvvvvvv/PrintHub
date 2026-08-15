@@ -1,0 +1,291 @@
+﻿<#
+.SYNOPSIS
+    Configures and builds PrintHub with the installed Windows MSVC toolchain.
+
+.EXAMPLE
+    .\scripts\build.ps1
+
+.EXAMPLE
+    .\scripts\build.ps1 -Architecture x64 -Configuration Debug
+#>
+[CmdletBinding()]
+param(
+    [ValidateSet('x64', 'x86')]
+    [string]$Architecture = 'x64',
+
+    [ValidateSet('Debug', 'Release')]
+    [string]$Configuration = 'Release',
+
+    [switch]$Help
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Write-Info {
+    param([string]$Message)
+    Write-Host "[PrintHub] $Message"
+}
+
+function Stop-Build {
+    param([string]$Message)
+    throw $Message
+}
+
+function Show-Usage {
+    @'
+PrintHub Windows build script
+
+Usage:
+  scripts\build.cmd [options]
+  powershell -File scripts\build.ps1 [options]
+
+Options:
+  -Architecture <x64|x86>         Target architecture. Default: x64
+  -Configuration <Debug|Release>  Build configuration. Default: Release
+  -Help                           Show this help message.
+
+Examples:
+  scripts\build.cmd
+  scripts\build.cmd -Architecture x64 -Configuration Debug
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1 -Architecture x86 -Configuration Release
+
+Tool discovery order:
+  1. VCPKG_ROOT, when it points to a usable vcpkg installation
+  2. vcpkg bundled with the latest Visual Studio / Build Tools installation
+  3. tools\vcpkg in this repository
+
+If vcpkg is unavailable, the script clones and bootstraps it into tools\vcpkg.
+The first dependency restore requires Git and network access. Visual Studio 2022
+or Build Tools 2022 with the MSVC x86/x64 toolset is required and is not installed automatically.
+
+Output:
+  out\build\<architecture>-<configuration>\src\PrintHub.exe
+'@ | Write-Host
+}
+
+if ($Help) {
+    Show-Usage
+    exit 0
+}
+
+function Get-FirstExistingPath {
+    param([string[]]$Candidates)
+
+    foreach ($candidate in $Candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Get-VisualStudioInstallation {
+    $vswhereCommand = Get-Command 'vswhere.exe' -CommandType Application -ErrorAction SilentlyContinue
+    $vswherePath = $null
+    if ($vswhereCommand) {
+        $vswherePath = $vswhereCommand.Source
+    }
+    else {
+        $vswhereCandidates = @()
+        if (${env:ProgramFiles(x86)}) {
+            $vswhereCandidates += Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        }
+        if ($env:ProgramFiles) {
+            $vswhereCandidates += Join-Path $env:ProgramFiles 'Microsoft Visual Studio\Installer\vswhere.exe'
+        }
+        $vswherePath = Get-FirstExistingPath $vswhereCandidates
+    }
+
+    if (-not $vswherePath) {
+        Stop-Build '未找到 vswhere.exe。请安装 Visual Studio 2022 或 Build Tools 2022，并选择“使用 C++ 的桌面开发”工作负载。'
+    }
+
+    $installationPath = @(
+        & $vswherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    ) | Select-Object -First 1
+
+    if (-not $installationPath) {
+        Stop-Build '未找到包含 MSVC x86/x64 工具集的 Visual Studio 2022 或 Build Tools 2022 安装。'
+    }
+
+    $devCmdPath = Join-Path $installationPath 'Common7\Tools\VsDevCmd.bat'
+    if (-not (Test-Path -LiteralPath $devCmdPath -PathType Leaf)) {
+        Stop-Build "找到了 Visual Studio，但缺少开发环境脚本：$devCmdPath"
+    }
+
+    return [pscustomobject]@{
+        InstallationPath = (Resolve-Path -LiteralPath $installationPath).Path
+        DevCmdPath       = (Resolve-Path -LiteralPath $devCmdPath).Path
+    }
+}
+
+function Get-CmakePath {
+    param([string]$VisualStudioPath)
+
+    $pathCommand = Get-Command 'cmake.exe' -CommandType Application -ErrorAction SilentlyContinue
+    $candidates = @()
+    if ($pathCommand) {
+        $candidates += $pathCommand.Source
+    }
+    $candidates += Join-Path $VisualStudioPath 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+
+        $versionOutput = (& $candidate --version 2>&1) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '(\d+\.\d+\.\d+)') {
+            continue
+        }
+
+        if ([version]$Matches[1] -ge [version]'3.21.0') {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    Stop-Build '未找到 CMake 3.21 或更高版本。请安装 Visual Studio 的 CMake 工具组件，或将兼容版本的 cmake.exe 加入 PATH。'
+}
+
+function Get-NinjaPath {
+    param([string]$VisualStudioPath)
+
+    $pathCommand = Get-Command 'ninja.exe' -CommandType Application -ErrorAction SilentlyContinue
+    $candidates = @()
+    if ($pathCommand) {
+        $candidates += $pathCommand.Source
+    }
+    $candidates += Join-Path $VisualStudioPath 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe'
+
+    $ninjaPath = Get-FirstExistingPath $candidates
+    if (-not $ninjaPath) {
+        Stop-Build '未找到 Ninja。请安装 Visual Studio 的 CMake 工具组件，或将 ninja.exe 加入 PATH。'
+    }
+
+    return $ninjaPath
+}
+
+function Test-VcpkgRoot {
+    param([string]$Candidate)
+
+    if (-not $Candidate -or -not (Test-Path -LiteralPath $Candidate -PathType Container)) {
+        return $null
+    }
+
+    $root = (Resolve-Path -LiteralPath $Candidate).Path
+    $executablePath = Join-Path $root 'vcpkg.exe'
+    $toolchainPath = Join-Path $root 'scripts\buildsystems\vcpkg.cmake'
+    if ((Test-Path -LiteralPath $executablePath -PathType Leaf) -and (Test-Path -LiteralPath $toolchainPath -PathType Leaf)) {
+        return $root
+    }
+
+    return $null
+}
+
+function Get-VcpkgRoot {
+    param(
+        [string]$RepositoryRoot,
+        [string]$VisualStudioPath
+    )
+
+    $candidates = @(
+        $env:VCPKG_ROOT,
+        (Join-Path $VisualStudioPath 'VC\vcpkg'),
+        (Join-Path $RepositoryRoot 'tools\vcpkg')
+    )
+
+    foreach ($candidate in $candidates) {
+        $validRoot = Test-VcpkgRoot $candidate
+        if ($validRoot) {
+            return $validRoot
+        }
+    }
+
+    $gitCommand = Get-Command 'git.exe' -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $gitCommand) {
+        Stop-Build '未找到可用的 vcpkg，且未找到 Git，无法自动引导 vcpkg。请安装 Git 或设置有效的 VCPKG_ROOT。'
+    }
+
+    $localRoot = Join-Path $RepositoryRoot 'tools\vcpkg'
+    if (Test-Path -LiteralPath $localRoot) {
+        Stop-Build "项目本地 vcpkg 目录不完整：$localRoot。请删除该目录后重试，或设置有效的 VCPKG_ROOT。"
+    }
+
+    Write-Info '未找到 vcpkg，正在下载并引导项目本地 vcpkg...'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $localRoot) -Force | Out-Null
+    & $gitCommand.Source clone --depth 1 https://github.com/microsoft/vcpkg.git $localRoot
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Build '下载 vcpkg 失败。请检查 Git、网络连接或设置有效的 VCPKG_ROOT。'
+    }
+
+    $bootstrapPath = Join-Path $localRoot 'bootstrap-vcpkg.bat'
+    & $bootstrapPath -disableMetrics
+    if ($LASTEXITCODE -ne 0) {
+        Stop-Build 'vcpkg 引导失败。请检查网络、代理和 Windows 开发工具链。'
+    }
+
+    $validRoot = Test-VcpkgRoot $localRoot
+    if (-not $validRoot) {
+        Stop-Build 'vcpkg 引导完成后仍未找到 vcpkg.exe 或 CMake 工具链文件。'
+    }
+
+    return $validRoot
+}
+
+try {
+    if ($Architecture -eq 'x64' -and -not [Environment]::Is64BitOperatingSystem) {
+        Stop-Build '当前操作系统为 32 位，无法构建 x64 二进制。请改用 -Architecture x86。'
+    }
+
+    $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+    $preset = '{0}-{1}' -f $Architecture, $Configuration.ToLowerInvariant()
+    $buildDirectory = Join-Path $repositoryRoot (Join-Path 'out\build' $preset)
+    $binaryPath = Join-Path $buildDirectory 'src\PrintHub.exe'
+
+    $visualStudio = Get-VisualStudioInstallation
+    $cmakePath = Get-CmakePath $visualStudio.InstallationPath
+    $ninjaPath = Get-NinjaPath $visualStudio.InstallationPath
+    $vcpkgRoot = Get-VcpkgRoot $repositoryRoot $visualStudio.InstallationPath
+    $hostArchitecture = if ([Environment]::Is64BitOperatingSystem) { 'x64' } else { 'x86' }
+
+    Write-Info "Preset: $preset"
+    Write-Info "Visual Studio: $($visualStudio.InstallationPath)"
+    Write-Info "CMake: $cmakePath"
+    Write-Info "vcpkg: $vcpkgRoot"
+
+    $savedVcpkgRoot = $env:VCPKG_ROOT
+    $savedPath = $env:PATH
+    try {
+        $env:VCPKG_ROOT = $vcpkgRoot
+        $env:PATH = (Split-Path -Parent $cmakePath) + ';' + (Split-Path -Parent $ninjaPath) + ';' + $savedPath
+
+        Push-Location $repositoryRoot
+        try {
+            $commandLine = 'call "{0}" -arch={1} -host_arch={2} && "{3}" --preset {4} && "{3}" --build "{5}"' -f `
+                $visualStudio.DevCmdPath, $Architecture, $hostArchitecture, $cmakePath, $preset, $buildDirectory
+            & $env:ComSpec /d /c $commandLine
+            if ($LASTEXITCODE -ne 0) {
+                Stop-Build "CMake 构建失败，退出代码：$LASTEXITCODE"
+            }
+        }
+        finally {
+            Pop-Location
+        }
+    }
+    finally {
+        $env:VCPKG_ROOT = $savedVcpkgRoot
+        $env:PATH = $savedPath
+    }
+
+    if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+        Stop-Build "构建命令已完成，但未找到输出二进制：$binaryPath"
+    }
+
+    Write-Info "构建成功：$binaryPath"
+}
+catch {
+    Write-Error "[PrintHub] $($_.Exception.Message)"
+    exit 1
+}
