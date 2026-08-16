@@ -10,7 +10,7 @@ if (POLICY CMP0141)
 endif()
 cmake_policy(SET CMP0091 NEW)
 
-project (PrintHub VERSION 1.0.1)
+project (PrintHub VERSION 1.0.2)
 if (NOT WIN32)
   message(FATAL_ERROR "PrintHub is a Windows-only network printing service.")
 endif()

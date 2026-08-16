@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.architecture }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x86
+            preset: x86-release
+          - architecture: x64
+            preset: x64-release
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+            throw "Release tags must use the form v<major>.<minor>.<patch>; received '$tag'."
+          }
+          $tagVersion = $Matches.version
+
+          $cmakeLists = Get-Content -LiteralPath CMakeLists.txt -Raw
+          $projectVersion = [regex]::Match(
+            $cmakeLists,
+            'project\s*\(\s*PrintHub\s+VERSION\s+(?<version>\d+\.\d+\.\d+)',
+            [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+          ).Groups['version'].Value
+          if (-not $projectVersion) {
+            throw 'Could not read the PrintHub version from CMakeLists.txt.'
+          }
+          if ($tagVersion -ne $projectVersion) {
+            throw "Tag version $tagVersion does not match CMake project version $projectVersion."
+          }
+
+      - name: Build release binaries
+        shell: pwsh
+        run: >
+          ./scripts/build.ps1
+          -Architecture '${{ matrix.architecture }}'
+          -Configuration Release
+
+      - name: Verify binary version
+        shell: pwsh
+        run: |
+          $expectedVersion = '${{ github.ref_name }}'.Substring(1)
+          $binary = 'out/publish/${{ matrix.architecture }}-release/PrintHub.exe'
+          $actualVersion = & $binary --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "PrintHub.exe --version failed with exit code $LASTEXITCODE."
+          }
+          if ($actualVersion -ne $expectedVersion) {
+            throw "Binary version $actualVersion does not match release version $expectedVersion."
+          }
+
+      - name: Run CTest
+        shell: pwsh
+        run: >
+          ctest
+          --test-dir 'out/build/${{ matrix.preset }}'
+          --output-on-failure
+          --no-tests=error
+
+      - name: Package release archive
+        id: package
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.Substring(1)
+          $architecture = '${{ matrix.architecture }}'
+          $publishDirectory = "out/publish/$architecture-release"
+          $archiveName = "PrintHub-$version-windows-$architecture.zip"
+          $packageDirectory = Join-Path $env:RUNNER_TEMP "PrintHub-$version-windows-$architecture"
+          $archivePath = Join-Path $env:RUNNER_TEMP $archiveName
+
+          Remove-Item -LiteralPath $packageDirectory -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $publishDirectory 'PrintHub.exe') -Destination $packageDirectory
+          Copy-Item -LiteralPath (Join-Path $publishDirectory 'PrintHubManager.exe') -Destination $packageDirectory
+          Copy-Item -LiteralPath LICENSE -Destination $packageDirectory
+          Compress-Archive -Path (Join-Path $packageDirectory '*') -DestinationPath $archivePath -Force
+
+          "archive=$archivePath" >> $env:GITHUB_OUTPUT
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.architecture }}
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $archives = Get-ChildItem -LiteralPath release-assets -Filter '*.zip' -File | Sort-Object Name
+          if ($archives.Count -ne 2) {
+            throw "Expected two release archives, found $($archives.Count)."
+          }
+          $checksums = foreach ($archive in $archives) {
+            $hash = Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256
+            '{0} *{1}' -f $hash.Hash.ToLowerInvariant(), $archive.Name
+          }
+          $checksums | Set-Content -LiteralPath release-assets/SHA256SUMS.txt -Encoding ascii
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: PrintHub ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/*.zip
+            release-assets/SHA256SUMS.txt
