@@ -1,22 +1,20 @@
-# Windows SNMP discovery fast rejection
+# Windows SNMP 发现快速拒绝
 
-Use `--snmp-reject` when Windows' **Add Standard TCP/IP Printer Port Wizard**
-waits for SNMP discovery requests to time out before it displays the generic
-network-card option. PrintHub then listens on the configured listen address at
-UDP port 161 and immediately returns a standards-compliant negative response
-to SNMP v1/v2c `public` community Get and GetNext requests.
+当 Windows 的**添加标准 TCP/IP 打印机端口向导**在显示通用网络卡选项前等待
+SNMP 发现请求超时时，可使用 `--snmp-reject`。启用后，PrintHub 会在配置的监听地址
+上的 UDP 161 端口监听，并立即对 SNMP v1/v2c `public` 团体的 Get 与 GetNext 请求
+返回符合标准的否定响应。
 
-Example:
+示例：
 
 ```powershell
-PrintHub.exe --raw-server "Local Printer:9100" --snmp-reject
+PrintHub.exe --raw-server "本地打印机名称:9100" --snmp-reject
 ```
 
-Open inbound UDP port 161 in Windows Firewall. If another service already owns
-UDP 161, PrintHub fails to start rather than silently disabling this feature.
+请在 Windows 防火墙中开放入站 UDP 161。若该端口已被其他服务占用，PrintHub 会启动失败，
+而不会静默停用此功能。
 
-This feature does not emulate a printer and does not make automatic printer
-identification succeed. In the wizard, select **Generic Network Card**, use
-RAW protocol on TCP port 9100, and clear **SNMP Status Enabled** after the port
-is created. RAW printing still requires a configured `--raw-server`; LPR
-printing still uses the configured LPD listener.
+此功能不会模拟打印机，也不能让自动识别打印机成功。在向导中请选择
+**通用网络卡（Generic Network Card）**，使用 TCP 9100 上的 RAW 协议，并在创建端口后
+清除**已启用 SNMP 状态（SNMP Status Enabled）**。RAW 打印仍须配置
+`--raw-server`；LPD 打印仍使用已配置的 LPD 监听器。
