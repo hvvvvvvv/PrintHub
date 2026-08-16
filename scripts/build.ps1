@@ -254,6 +254,7 @@ try {
     $buildDirectory = Join-Path $repositoryRoot (Join-Path 'out\build' $preset)
     $serviceBinaryPath = Join-Path $buildDirectory 'src\PrintHub.exe'
     $managerBinaryPath = Join-Path $buildDirectory 'src\gui\PrintHubManager.exe'
+    $managerPdbPath = Join-Path $buildDirectory 'symbols\PrintHubManager.pdb'
     $publishDirectory = Join-Path $repositoryRoot (Join-Path 'out\publish' $preset)
 
     $visualStudio = Get-VisualStudioInstallation
@@ -312,6 +313,15 @@ try {
     New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
     Copy-Item -LiteralPath $serviceBinaryPath -Destination (Join-Path $publishDirectory 'PrintHub.exe') -Force
     Copy-Item -LiteralPath $managerBinaryPath -Destination (Join-Path $publishDirectory 'PrintHubManager.exe') -Force
+
+    if ($configuration -eq 'Release') {
+        if (-not (Test-Path -LiteralPath $managerPdbPath -PathType Leaf)) {
+            throw "未生成 PrintHubManager PDB：$managerPdbPath"
+        }
+        $symbolDirectory = Join-Path $repositoryRoot (Join-Path 'out\symbols' $preset)
+        New-Item -ItemType Directory -Path $symbolDirectory -Force | Out-Null
+        Copy-Item -LiteralPath $managerPdbPath -Destination (Join-Path $symbolDirectory 'PrintHubManager.pdb') -Force
+    }
 
     Write-Info "构建成功，发布目录：$publishDirectory"
 }

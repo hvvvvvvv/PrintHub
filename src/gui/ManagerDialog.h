@@ -73,6 +73,7 @@ private:
     void StartStartupLoad();
     void CancelStartupLoad();
     void CancelOperation();
+    void PrepareForClose();
     void DetachControlWrappers();
     void UpdateMappingTab();
     void RefreshServiceStatus(bool loadConfiguration);
@@ -114,6 +115,7 @@ private:
     bool m_busy = false;
     std::shared_ptr<OperationState> m_operationState;
     std::shared_ptr<StartupLoadState> m_startupLoadState;
+    bool m_controlsDetached = false;
     bool m_layoutReady = false;
     CSize m_baseClientSize{};
     std::unordered_map<UINT, CRect> m_baseLayout;

@@ -12,7 +12,10 @@ add_executable(PrintHubManager WIN32
     ${PROJECT_SOURCE_DIR}/src/ServiceConfiguration.cpp
 )
 target_compile_features(PrintHubManager PRIVATE cxx_std_20)
-target_compile_options(PrintHubManager PRIVATE /utf-8)
+target_compile_options(PrintHubManager PRIVATE
+    /utf-8
+    "$<$<CONFIG:Release>:/Zi>"
+)
 target_compile_definitions(PrintHubManager PRIVATE
     UNICODE _UNICODE WINVER=0x0601 _WIN32_WINNT=0x0601
 )
@@ -22,9 +25,13 @@ target_include_directories(PrintHubManager PRIVATE
 target_link_libraries(PrintHubManager PRIVATE
     Advapi32 Winspool Shell32
 )
-target_link_options(PrintHubManager PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+target_link_options(PrintHubManager PRIVATE
+    "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
+    "$<$<CONFIG:Release>:/DEBUG:FULL>"
+)
 set_target_properties(PrintHubManager PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/symbols"
 )
 
 # Ship the manager and the service together so the default path is usable

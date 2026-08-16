@@ -144,13 +144,14 @@ BOOL CManagerDialog::OnInitDialog() {
 }
 
 void CManagerDialog::OnCancel() {
-    if (!m_busy) CDialogEx::OnCancel();
+    if (m_busy) return;
+    PrepareForClose();
+    CDialogEx::OnCancel();
 }
 
 void CManagerDialog::OnDestroy() {
     CancelStartupLoad();
     CancelOperation();
-    DetachControlWrappers();
     CDialogEx::OnDestroy();
 }
 
@@ -399,6 +400,32 @@ void CManagerDialog::CancelOperation() {
     }
 }
 
+void CManagerDialog::PrepareForClose() {
+    if (m_controlsDetached) return;
+    m_controlsDetached = true;
+    CancelStartupLoad();
+    CancelOperation();
+    DetachControlWrappers();
+}
+
+void CManagerDialog::DetachControlWrappers() {
+    for (CWnd* control : { static_cast<CWnd*>(&m_servicePath), static_cast<CWnd*>(&m_status), static_cast<CWnd*>(&m_listenAddress),
+        static_cast<CWnd*>(&m_rawThreads), static_cast<CWnd*>(&m_printerName), static_cast<CWnd*>(&m_rawPort),
+        static_cast<CWnd*>(&m_rawList), static_cast<CWnd*>(&m_rawMappingPage), static_cast<CWnd*>(&m_lpdMappingPage),
+        static_cast<CWnd*>(&m_lpdQueueName), static_cast<CWnd*>(&m_lpdPrinterName), static_cast<CWnd*>(&m_lpdQueueList),
+        static_cast<CWnd*>(&m_lpdPort), static_cast<CWnd*>(&m_lpdThreads), static_cast<CWnd*>(&m_maxPendingClients),
+        static_cast<CWnd*>(&m_lpdMaxControlBytes), static_cast<CWnd*>(&m_snmpReject), static_cast<CWnd*>(&m_logLevel),
+        static_cast<CWnd*>(&m_preview) }) {
+        const HWND handle = control->GetSafeHwnd();
+        if (!handle) continue;
+        if (::IsWindow(handle)) {
+            control->UnsubclassWindow();
+        } else {
+            control->Detach();
+        }
+    }
+}
+
 void CManagerDialog::ApplyStartupLoadResult(const StartupLoadResult& result) {
     PopulatePrinters(result.printers);
     if (result.snapshot.error != ERROR_SUCCESS) {
@@ -421,18 +448,6 @@ void CManagerDialog::ApplyStartupLoadResult(const StartupLoadResult& result) {
         CString currentStatus;
         m_status.GetWindowTextW(currentStatus);
         m_status.SetWindowTextW((currentStatus + L"；打印机列表加载失败：" + FormatWin32Error(result.printerError)).GetString());
-    }
-}
-
-void CManagerDialog::DetachControlWrappers() {
-    for (CWnd* control : { static_cast<CWnd*>(&m_servicePath), static_cast<CWnd*>(&m_status), static_cast<CWnd*>(&m_listenAddress),
-        static_cast<CWnd*>(&m_rawThreads), static_cast<CWnd*>(&m_printerName), static_cast<CWnd*>(&m_rawPort),
-        static_cast<CWnd*>(&m_rawList), static_cast<CWnd*>(&m_rawMappingPage), static_cast<CWnd*>(&m_lpdMappingPage),
-        static_cast<CWnd*>(&m_lpdQueueName), static_cast<CWnd*>(&m_lpdPrinterName), static_cast<CWnd*>(&m_lpdQueueList),
-        static_cast<CWnd*>(&m_lpdPort), static_cast<CWnd*>(&m_lpdThreads), static_cast<CWnd*>(&m_maxPendingClients),
-        static_cast<CWnd*>(&m_lpdMaxControlBytes), static_cast<CWnd*>(&m_snmpReject), static_cast<CWnd*>(&m_logLevel),
-        static_cast<CWnd*>(&m_preview) }) {
-        if (control->GetSafeHwnd()) control->UnsubclassWindow();
     }
 }
 
