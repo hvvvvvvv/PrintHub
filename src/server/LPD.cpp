@@ -2,7 +2,6 @@
 
 #include <LpdSession.h>
 #include <PrinterJob.h>
-#include <utility.h>
 
 namespace {
 
@@ -46,14 +45,14 @@ private:
 
 } // namespace
 
-LPD::LPD(uint16_t port, int minThreads)
-    : PrintServer(port, minThreads) {
+LPD::LPD(uint16_t port, std::vector<LpdQueueMapping> queueMappings, int minThreads)
+    : PrintServer(port, minThreads), m_queueMappings(std::move(queueMappings)) {
 }
 
 void LPD::handleClient(TcpClient& client) {
     WinspoolPrinterJobFactory jobFactory;
-    LpdSession session(jobFactory, [](const std::string& queueName) {
-        return utility::GetPrinterNameFromShareName(queueName);
+    LpdSession session(jobFactory, [this](const std::string& queueName) {
+        return ResolveLpdQueuePrinter(m_queueMappings, queueName);
     });
     TcpLpdTransport transport(client);
     session.Run(transport);

@@ -1,7 +1,9 @@
 # Windows LPR compatibility validation
 
-Run the service with an LPD listener (default TCP 515) and expose a shared or
-local Windows printer whose share name is used as the LPR queue name.
+Run the service with an LPD listener (default TCP 515) and configure an
+explicit `--lpd-queue "队列名=打印机名称"` mapping.  PrintHub accepts only
+configured queue names; it does not infer a printer from a Windows printer or
+share name.
 
 ## Required matrix
 
@@ -14,8 +16,9 @@ local Windows printer whose share name is used as the LPR queue name.
 
 ## Manual procedure
 
-1. Create a Windows test printer and either share it or use its exact local
-   printer name as the configured LPR queue.
+1. Create a Windows test printer and add an LPD queue mapping to that printer
+   in PrintHub Manager. Use the configured queue name in the Windows LPR port;
+   queue matching is exact but ASCII case-insensitive.
 2. Configure a Standard TCP/IP port to the PrintHub host. Test RAW/9100 and
    LPR/515 separately; for LPR test with **LPR Byte Counting Enabled** both
    selected and cleared.

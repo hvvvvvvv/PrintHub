@@ -12,6 +12,7 @@
 #include <set>
 #include <tuple>
 #include <vector>
+#include <ServiceConfiguration.hpp>
 
 class PrintServer {
 	public:
@@ -57,9 +58,11 @@ class PrintServer {
 
 class LPD : public PrintServer {
 	public:
-		LPD(uint16_t port, int minThreads = 1);
+		LPD(uint16_t port, std::vector<LpdQueueMapping> queueMappings, int minThreads = 1);
 	protected:
 		void handleClient(TcpClient& client) override;
+	private:
+		std::vector<LpdQueueMapping> m_queueMappings;
 };
 
 class RawPrinting : public PrintServer {

@@ -1,0 +1,42 @@
+#pragma once
+
+#define IDD_MANAGER_DIALOG          101
+
+#define IDC_SERVICE_PATH            1001
+#define IDC_BROWSE_SERVICE          1002
+#define IDC_SERVICE_STATUS          1003
+#define IDC_LISTEN_ADDRESS          1004
+#define IDC_RAW_THREADS             1005
+#define IDC_PRINTER_NAME            1006
+#define IDC_RAW_PORT                1007
+#define IDC_ADD_RAW                 1008
+#define IDC_REMOVE_RAW              1009
+#define IDC_RAW_LIST                1010
+#define IDC_LPD_PORT                1012
+#define IDC_LPD_THREADS             1013
+#define IDC_SNMP_REJECT             1014
+#define IDC_LOG_LEVEL               1015
+#define IDC_COMMAND_PREVIEW         1016
+#define IDC_REFRESH                 1017
+#define IDC_INSTALL_UPDATE          1018
+#define IDC_START_SERVICE           1019
+#define IDC_STOP_SERVICE            1020
+#define IDC_RESTART_SERVICE         1021
+#define IDC_UNINSTALL_SERVICE       1022
+#define IDC_OPEN_LOGS               1023
+#define IDC_PROTOCOL_GROUP          1024
+#define IDC_RAW_GROUP               1025
+#define IDC_COMMAND_GROUP           1026
+#define IDC_OPERATION_HINT          1027
+#define IDI_MANAGER_APP             1028
+#define IDC_RAW_MAPPING_PAGE        1029
+#define IDC_LPD_MAPPING_PAGE        1030
+#define IDC_RAW_PRINTER_LABEL       1031
+#define IDC_RAW_PORT_LABEL          1032
+#define IDC_LPD_QUEUE_LABEL         1033
+#define IDC_LPD_PRINTER_LABEL       1034
+#define IDC_LPD_QUEUE_NAME          1035
+#define IDC_LPD_PRINTER_NAME        1036
+#define IDC_ADD_LPD_QUEUE           1037
+#define IDC_REMOVE_LPD_QUEUE        1038
+#define IDC_LPD_QUEUE_LIST          1039

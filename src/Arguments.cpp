@@ -1,6 +1,7 @@
 #include <Arguments.hpp>
 
 #include <config.h>
+#include <ServiceConfiguration.hpp>
 #include <utility.h>
 
 #include <cctype>
@@ -11,14 +12,13 @@
 
 Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT_VERSION)) {
     m_parser.add_argument(ARGS_RAW_SERVERS).help("List of raw server printer name port maps").append();
+    m_parser.add_argument(ARGS_LPD_QUEUE).help("LPD queue-to-printer map in queue=printer form").append();
     m_parser.add_argument(ARGS_RAW_SERVER_MIN_THREADS).help("Minimum threads for raw printing server")
         .default_value(DEFAULT_MIN_THREADS).scan<'d', uint16_t>();
     m_parser.add_argument(ARGS_LPD_PORT).help("Port for LPD server")
         .default_value(DEFAULT_LPD_PORT).scan<'d', uint16_t>();
     m_parser.add_argument(ARGS_LPD_MIN_THREADS).help("Minimum threads for LPD server")
         .default_value(DEFAULT_MIN_THREADS).scan<'d', uint16_t>();
-    m_parser.add_argument(ARGS_LPD_DISABLE).help("Disable LPD server")
-        .default_value(DEFAULT_LPD_DISABLE).implicit_value(true);
     m_parser.add_argument(ARGS_LISTEN_ADDRESS).help("IPv4 address used by all RAW and LPD listeners")
         .default_value(std::string(DEFAULT_LISTEN_ADDRESS));
     m_parser.add_argument(ARGS_SNMP_REJECT).help("Reply immediately to SNMP v1/v2c discovery requests on UDP port 161")
@@ -31,9 +31,9 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
     m_parser.add_argument(ARGS_SILENT).default_value(DEFAULT_SILENT).implicit_value(true).hidden();
 
     RawServersConfig = std::nullopt;
+    LpdQueuesConfig = std::nullopt;
     RawServerMinThreads = DEFAULT_MIN_THREADS;
     LpdPort = DEFAULT_LPD_PORT;
-    LpdDisable = DEFAULT_LPD_DISABLE;
     ListenAddress = DEFAULT_LISTEN_ADDRESS;
     SnmpReject = DEFAULT_SNMP_REJECT;
     LpdMinThreads = DEFAULT_MIN_THREADS;
@@ -44,60 +44,81 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
 
 void Arguments::Parse(int argc, char** argv) {
     m_parser.parse_args(argc, argv);
-    RawServerMinThreads = m_parser.get<uint16_t>(ARGS_RAW_SERVER_MIN_THREADS);
-    LpdPort = m_parser.get<uint16_t>(ARGS_LPD_PORT);
-    LpdDisable = m_parser.get<bool>(ARGS_LPD_DISABLE);
-    ListenAddress = m_parser.get<std::string>(ARGS_LISTEN_ADDRESS);
-    SnmpReject = m_parser.get<bool>(ARGS_SNMP_REJECT);
-    LpdMinThreads = m_parser.get<uint16_t>(ARGS_LPD_MIN_THREADS);
-    LogLevel = m_parser.get<spdlog::level::level_enum>(ARGS_LOG_LEVEL);
+
+    // The console-only switches are parsed by argparse.  Everything persisted
+    // in the service ImagePath is parsed by the shared configuration model so
+    // the MFC manager and the server accept exactly the same syntax.
+    std::vector<std::string> configurationArguments;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == ARGS_SERVICE) {
+            ++index;
+            continue;
+        }
+        if (argument == ARGS_SILENT) {
+            continue;
+        }
+        configurationArguments.push_back(argument);
+    }
     ServiceOperation = m_parser.is_used(ARGS_SERVICE)
         ? std::make_optional(m_parser.get<std::string>(ARGS_SERVICE)) : std::nullopt;
-    Silent = m_parser.get<bool>(ARGS_SILENT);
-    if (m_parser.is_used(ARGS_RAW_SERVERS)) {
-        parseRawServers(m_parser.get<std::vector<std::string>>(ARGS_RAW_SERVERS));
+    const bool requireRunnableListener = !ServiceOperation.has_value() ||
+        *ServiceOperation == ARGS_SERVICE_INSTALL;
+    const auto configuration = ServiceConfiguration::Parse(configurationArguments, requireRunnableListener);
+    RawServersConfig = RawServersConfigType{};
+    for (const auto& server : configuration.rawServers) {
+        RawServersConfig->emplace_back(server.printerName, server.port);
     }
-    else {
+    if (RawServersConfig->empty()) {
         RawServersConfig.reset();
     }
+    LpdQueuesConfig = configuration.lpdQueues;
+    if (LpdQueuesConfig->empty()) {
+        LpdQueuesConfig.reset();
+    }
+    RawServerMinThreads = configuration.rawServerMinThreads;
+    LpdPort = configuration.lpdPort;
+    ListenAddress = configuration.listenAddress;
+    SnmpReject = configuration.snmpReject;
+    LpdMinThreads = configuration.lpdMinThreads;
+    LogLevel = parseLogLevel(ServiceConfiguration::LogLevelToString(configuration.logLevel));
+    Silent = m_parser.get<bool>(ARGS_SILENT);
 }
 
 std::vector<std::string> Arguments::GetRawArguments(std::optional<std::set<std::string>> ignoreItems) const {
     const auto isIgnored = [&ignoreItems](const std::string& item) {
         return ignoreItems.has_value() && ignoreItems->contains(item);
     };
-    std::vector<std::string> result;
-    if (RawServersConfig.has_value() && !isIgnored(ARGS_RAW_SERVERS)) {
+    ServiceConfiguration configuration;
+    if (RawServersConfig.has_value()) {
         for (const auto& server : *RawServersConfig) {
-            result.push_back(ARGS_RAW_SERVERS);
-            result.push_back(fmt::format("{}:{}", std::get<0>(server), std::get<1>(server)));
+            configuration.rawServers.push_back({ std::get<0>(server), std::get<1>(server) });
         }
     }
-    if (RawServerMinThreads != DEFAULT_MIN_THREADS && !isIgnored(ARGS_RAW_SERVER_MIN_THREADS)) {
-        result.push_back(ARGS_RAW_SERVER_MIN_THREADS);
-        result.push_back(std::to_string(RawServerMinThreads));
+    if (LpdQueuesConfig.has_value()) {
+        configuration.lpdQueues = *LpdQueuesConfig;
     }
-    if (LpdPort != DEFAULT_LPD_PORT && !isIgnored(ARGS_LPD_PORT)) {
-        result.push_back(ARGS_LPD_PORT);
-        result.push_back(std::to_string(LpdPort));
-    }
-    if (LpdDisable != DEFAULT_LPD_DISABLE && !isIgnored(ARGS_LPD_DISABLE)) {
-        result.push_back(ARGS_LPD_DISABLE);
-    }
-    if (ListenAddress != DEFAULT_LISTEN_ADDRESS && !isIgnored(ARGS_LISTEN_ADDRESS)) {
-        result.push_back(ARGS_LISTEN_ADDRESS);
-        result.push_back(ListenAddress);
-    }
-    if (SnmpReject != DEFAULT_SNMP_REJECT && !isIgnored(ARGS_SNMP_REJECT)) {
-        result.push_back(ARGS_SNMP_REJECT);
-    }
-    if (LpdMinThreads != DEFAULT_MIN_THREADS && !isIgnored(ARGS_LPD_MIN_THREADS)) {
-        result.push_back(ARGS_LPD_MIN_THREADS);
-        result.push_back(std::to_string(LpdMinThreads));
-    }
-    if (LogLevel != DEFAULT_LOG_LEVEL && !isIgnored(ARGS_LOG_LEVEL)) {
-        result.push_back(ARGS_LOG_LEVEL);
-        result.push_back(logLevelToString(LogLevel));
+    configuration.rawServerMinThreads = RawServerMinThreads;
+    configuration.lpdPort = LpdPort;
+    configuration.listenAddress = ListenAddress;
+    configuration.snmpReject = SnmpReject;
+    configuration.lpdMinThreads = LpdMinThreads;
+    configuration.logLevel = static_cast<ServiceLogLevel>(LogLevel);
+
+    const auto allConfigurationArguments = configuration.ToArguments();
+    std::vector<std::string> result;
+    for (size_t index = 0; index < allConfigurationArguments.size(); ++index) {
+        const auto& argument = allConfigurationArguments[index];
+        if (isIgnored(argument)) {
+            if (index + 1 < allConfigurationArguments.size() && allConfigurationArguments[index + 1].starts_with("--") == false) {
+                ++index;
+            }
+            continue;
+        }
+        result.push_back(argument);
+        if (index + 1 < allConfigurationArguments.size() && allConfigurationArguments[index + 1].starts_with("--") == false) {
+            result.push_back(allConfigurationArguments[++index]);
+        }
     }
     if (ServiceOperation.has_value() && !isIgnored(ARGS_SERVICE)) {
         result.push_back(ARGS_SERVICE);
@@ -120,8 +141,14 @@ std::string Arguments::Dump() const {
             result.append(fmt::format("  - {}:{}\n", std::get<0>(server), std::get<1>(server)));
         }
     }
-    result.append(fmt::format("RawServerMinThreads: {}\nLpdPort: {}\nLpdDisable: {}\nListenAddress: {}\nSnmpReject: {}\nLpdMinThreads: {}\nLogLevel: {}\n",
-        RawServerMinThreads, LpdPort, LpdDisable, ListenAddress, SnmpReject, LpdMinThreads, logLevelToString(LogLevel)));
+    result.append(fmt::format("LpdQueuesConfig: {}\n", LpdQueuesConfig.has_value() ? "set" : "not set"));
+    if (LpdQueuesConfig.has_value()) {
+        for (const auto& mapping : *LpdQueuesConfig) {
+            result.append(fmt::format("  - {}={}\n", mapping.queueName, mapping.printerName));
+        }
+    }
+    result.append(fmt::format("RawServerMinThreads: {}\nLpdPort: {}\nListenAddress: {}\nSnmpReject: {}\nLpdMinThreads: {}\nLogLevel: {}\n",
+        RawServerMinThreads, LpdPort, ListenAddress, SnmpReject, LpdMinThreads, logLevelToString(LogLevel)));
     result.append(ServiceOperation.has_value() ? fmt::format("ServiceOperation: {}\n", *ServiceOperation) : "ServiceOperation: not set\n");
     result.append(fmt::format("Silent: {}", Silent));
     return result;

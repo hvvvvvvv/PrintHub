@@ -26,6 +26,7 @@ constexpr DWORD kInitialServiceCheckpoint = 1;
 } // namespace
 
 std::atomic<bool> g_shutdown = false;
+HANDLE g_shutdownEvent = nullptr;
 std::atomic<int> g_servExitCode = EXIT_SUCCESS;
 SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
 std::atomic<DWORD> g_serviceCheckpoint = kInitialServiceCheckpoint;
@@ -40,6 +41,13 @@ const std::unique_ptr<const Arguments> g_args = []() {
 	}
 	return args;
 }();
+
+static void signalShutdown() {
+	g_shutdown.store(true);
+	if (g_shutdownEvent) {
+		SetEvent(g_shutdownEvent);
+	}
+}
 
 static void setupLogger(spdlog::level::level_enum level) {
 	auto curDir = utility::getExecutableDirectory();
@@ -117,14 +125,14 @@ static std::vector<std::unique_ptr<PrintServer>> createRawServers() {
 			servers.push_back(std::make_unique<RawPrinting>(printerName, port, g_args->RawServerMinThreads));
 		}
 	}
-	if (!g_args->LpdDisable) {
+	if (g_args->LpdQueuesConfig.has_value()) {
 		if (g_args->LpdPort == 0) {
 			throw std::invalid_argument("LPD port cannot be zero");
 		}
 		if (g_args->LpdMinThreads < 1) {
 			throw std::invalid_argument("LPD minimum threads must be at least 1");
 		}
-		servers.push_back(std::make_unique<LPD>(g_args->LpdPort, g_args->LpdMinThreads));
+		servers.push_back(std::make_unique<LPD>(g_args->LpdPort, *g_args->LpdQueuesConfig, g_args->LpdMinThreads));
 	}
 	return servers;
 }
@@ -137,8 +145,7 @@ static BOOL WINAPI consoleHandler(DWORD ctrlType) {
 		case CTRL_LOGOFF_EVENT:
 		case CTRL_SHUTDOWN_EVENT:
 			spdlog::info("Received console control signal: {}", ctrlType);
-			g_shutdown.store(true);
-			g_shutdown.notify_all();
+			signalShutdown();
 			return TRUE;
 		default:
 			return FALSE;
@@ -166,8 +173,7 @@ static DWORD WINAPI svcCtrlHandler(DWORD dwControl, DWORD, LPVOID, LPVOID) {
 		case SERVICE_CONTROL_STOP:
 		case SERVICE_CONTROL_SHUTDOWN: {
 			reportServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
-			g_shutdown.store(true);
-			g_shutdown.notify_all();
+			signalShutdown();
 			spdlog::info("Service stopping...");
 			return NO_ERROR;
 		} break;
@@ -205,7 +211,10 @@ static int mainRun() {
 		}
 
 		while (!g_shutdown.load()) {
-			g_shutdown.wait(false);
+			if (WaitForSingleObject(g_shutdownEvent, INFINITE) != WAIT_OBJECT_0) {
+				spdlog::error("Failed while waiting for shutdown event: {}", GetLastError());
+				return 1;
+			}
 		}
 		for (auto& server : servers) {
 			server->Stop();
@@ -243,6 +252,15 @@ static VOID WINAPI svcMain(DWORD, LPTSTR*) {
 }
 
 int main(int argc, char* argv[]) {
+	g_shutdownEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+	if (!g_shutdownEvent) {
+		std::cerr << "Failed to create shutdown event: " << GetLastError() << std::endl;
+		return 1;
+	}
+	const auto closeShutdownEvent = []() {
+		CloseHandle(g_shutdownEvent);
+		g_shutdownEvent = nullptr;
+	};
 	setupLogger(g_args->LogLevel);
 	spdlog::debug("Parsed arguments: \n{}", g_args->Dump());
 	SERVICE_TABLE_ENTRYA DispatchTable[] = {
@@ -251,13 +269,16 @@ int main(int argc, char* argv[]) {
 	};
 	const auto dispatched = StartServiceCtrlDispatcherA(DispatchTable);
 	if (dispatched) {
-		return g_servExitCode.load();
+		const auto result = g_servExitCode.load();
+		closeShutdownEvent();
+		return result;
 	}
 	const auto dispatcherError = GetLastError();
 	if (dispatcherError == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
 		if(g_args->ServiceOperation.has_value()) {
 			if(!utility::IsRunAsAdmin()) {
 				spdlog::error("This operation requires administrative privileges. Please run as administrator.");
+				closeShutdownEvent();
 				return 1;
 			}
 			try {
@@ -265,13 +286,18 @@ int main(int argc, char* argv[]) {
 				std::cout << "Service operation " << g_args->ServiceOperation.value() << " completed successfully." << std::endl;
 			} catch (const std::exception& e) {
 				std::cerr << "Service operation failed: " << e.what() << std::endl;
+				closeShutdownEvent();
 				return 1;
 			}
+			closeShutdownEvent();
 			return 0;
 		}
 		SetConsoleCtrlHandler(consoleHandler, TRUE);
-		return mainRun();
+		const auto result = mainRun();
+		closeShutdownEvent();
+		return result;
 	}
 	spdlog::error("Failed to start service control dispatcher: {}", dispatcherError);
+	closeShutdownEvent();
 	return 1;
 }

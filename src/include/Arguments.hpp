@@ -9,16 +9,18 @@
 
 #include <argparse.h>
 #include <spdlog/spdlog.h>
+#include <ServiceConfiguration.hpp>
 
 class Arguments {
 public:
     using RawServersConfigType = std::vector<std::tuple<std::string, uint16_t>>;
+    using LpdQueuesConfigType = std::vector<LpdQueueMapping>;
 
     static constexpr auto ARGS_RAW_SERVERS = "--raw-server";
     static constexpr auto ARGS_RAW_SERVER_MIN_THREADS = "--raw-server-min-threads";
+    static constexpr auto ARGS_LPD_QUEUE = "--lpd-queue";
     static constexpr auto ARGS_LPD_PORT = "--lpd-port";
     static constexpr auto ARGS_LPD_MIN_THREADS = "--lpd-min-threads";
-    static constexpr auto ARGS_LPD_DISABLE = "--lpd-disable";
     static constexpr auto ARGS_LISTEN_ADDRESS = "--listen-address";
     static constexpr auto ARGS_SNMP_REJECT = "--snmp-reject";
     static constexpr auto ARGS_LOG_LEVEL = "--log-level";
@@ -34,7 +36,6 @@ public:
     static constexpr uint16_t DEFAULT_LPD_PORT = 515;
     static constexpr uint16_t DEFAULT_RAW_PORT = 9100;
     static constexpr auto DEFAULT_LOG_LEVEL = spdlog::level::info;
-    static constexpr auto DEFAULT_LPD_DISABLE = false;
     static constexpr auto DEFAULT_SNMP_REJECT = false;
     static constexpr auto DEFAULT_SILENT = false;
     static constexpr auto DEFAULT_LISTEN_ADDRESS = "0.0.0.0";
@@ -52,9 +53,9 @@ public:
     std::string Dump() const;
 
     std::optional<RawServersConfigType> RawServersConfig;
+    std::optional<LpdQueuesConfigType> LpdQueuesConfig;
     int RawServerMinThreads;
     uint16_t LpdPort;
-    bool LpdDisable;
     std::string ListenAddress;
     bool SnmpReject;
     int LpdMinThreads;

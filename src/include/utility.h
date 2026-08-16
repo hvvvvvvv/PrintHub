@@ -34,30 +34,6 @@ namespace utility {
 		return false;  
 	}
 
-	inline std::optional<std::string> GetPrinterNameFromShareName(const std::string& shareName) {
-		DWORD needed = 0, returned = 0;
-		DWORD flags = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
-		EnumPrintersA(flags, nullptr, 2, nullptr, 0, &needed, &returned);
-		if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
-			return std::nullopt;
-		}
-		std::vector<BYTE> buffer(needed);
-		if (!EnumPrintersA(flags, nullptr, 2, buffer.data(), needed, &needed, &returned)) {
-			return std::nullopt;
-		}
-
-		auto* printers = reinterpret_cast<PRINTER_INFO_2A*>(buffer.data());
-		for (DWORD i = 0; i < returned; ++i) {
-			if (printers[i].pPrinterName && printers[i].pShareName && shareName == printers[i].pShareName) {
-				return std::string(printers[i].pPrinterName);
-			}
-			if (printers[i].pPrinterName && shareName == printers[i].pPrinterName) {
-				return std::string(printers[i].pPrinterName);
-			}
-		}
-		return std::nullopt;
-	}
-
 	inline std::vector<std::string> SplistByLine(const std::string_view str) {
 		std::vector<std::string> result;
 

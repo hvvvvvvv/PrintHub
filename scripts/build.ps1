@@ -60,7 +60,8 @@ The first dependency restore requires Git and network access. Visual Studio 2022
 or Build Tools 2022 with the MSVC x86/x64 toolset is required and is not installed automatically.
 
 Output:
-  out\build\<architecture>-<configuration>\src\PrintHub.exe
+  out\publish\<architecture>-<configuration>\PrintHub.exe
+  out\publish\<architecture>-<configuration>\PrintHubManager.exe
 '@ | Write-Host
 }
 
@@ -167,6 +168,15 @@ function Get-NinjaPath {
     return $ninjaPath
 }
 
+function Test-MfcInstalled {
+    param([string]$VisualStudioPath)
+
+    $mfcLibrary = Get-ChildItem -Path (Join-Path $VisualStudioPath 'VC\Tools\MSVC') -Filter 'mfc*.lib' -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\atlmfc\\lib\\x86\\' } |
+        Select-Object -First 1
+    return $null -ne $mfcLibrary
+}
+
 function Test-VcpkgRoot {
     param([string]$Candidate)
 
@@ -242,9 +252,14 @@ try {
     $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
     $preset = '{0}-{1}' -f $Architecture, $Configuration.ToLowerInvariant()
     $buildDirectory = Join-Path $repositoryRoot (Join-Path 'out\build' $preset)
-    $binaryPath = Join-Path $buildDirectory 'src\PrintHub.exe'
+    $serviceBinaryPath = Join-Path $buildDirectory 'src\PrintHub.exe'
+    $managerBinaryPath = Join-Path $buildDirectory 'src\gui\PrintHubManager.exe'
+    $publishDirectory = Join-Path $repositoryRoot (Join-Path 'out\publish' $preset)
 
     $visualStudio = Get-VisualStudioInstallation
+    if (-not (Test-MfcInstalled $visualStudio.InstallationPath)) {
+        Stop-Build '未找到 MFC 库。请在 Visual Studio Installer 中安装“C++ MFC for latest v143 build tools”组件。'
+    }
     $cmakePath = Get-CmakePath $visualStudio.InstallationPath
     $ninjaPath = Get-NinjaPath $visualStudio.InstallationPath
     $vcpkgRoot = Get-VcpkgRoot $repositoryRoot $visualStudio.InstallationPath
@@ -257,15 +272,23 @@ try {
 
     $savedVcpkgRoot = $env:VCPKG_ROOT
     $savedPath = $env:PATH
+    $savedLocalAppData = $env:LOCALAPPDATA
     try {
         $env:VCPKG_ROOT = $vcpkgRoot
         $env:PATH = (Split-Path -Parent $cmakePath) + ';' + (Split-Path -Parent $ninjaPath) + ';' + $savedPath
+        # Keep vcpkg's mutable registry clone within the build output. This
+        # avoids requiring write access to a user's global AppData cache.
+        $env:LOCALAPPDATA = Join-Path $repositoryRoot 'out\vcpkg-localappdata'
+        New-Item -ItemType Directory -Path $env:LOCALAPPDATA -Force | Out-Null
 
         Push-Location $repositoryRoot
         try {
-            $commandLine = 'call "{0}" -arch={1} -host_arch={2} && "{3}" --preset {4} && "{3}" --build "{5}"' -f `
+            # VsDevCmd can leave PATH and Path with different values when
+            # invoked from PowerShell. CMake observes Path, so normalize it
+            # after activating the MSVC environment.
+            $commandLine = 'call "{0}" -arch={1} -host_arch={2} && set "Path=!PATH!" && "{3}" --preset {4} && "{3}" --build "{5}"' -f `
                 $visualStudio.DevCmdPath, $Architecture, $hostArchitecture, $cmakePath, $preset, $buildDirectory
-            & $env:ComSpec /d /c $commandLine
+            & $env:ComSpec /v:on /d /c $commandLine
             if ($LASTEXITCODE -ne 0) {
                 Stop-Build "CMake 构建失败，退出代码：$LASTEXITCODE"
             }
@@ -277,13 +300,20 @@ try {
     finally {
         $env:VCPKG_ROOT = $savedVcpkgRoot
         $env:PATH = $savedPath
+        $env:LOCALAPPDATA = $savedLocalAppData
     }
 
-    if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
-        Stop-Build "构建命令已完成，但未找到输出二进制：$binaryPath"
+    foreach ($binaryPath in @($serviceBinaryPath, $managerBinaryPath)) {
+        if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
+            Stop-Build "构建命令已完成，但未找到输出二进制：$binaryPath"
+        }
     }
 
-    Write-Info "构建成功：$binaryPath"
+    New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
+    Copy-Item -LiteralPath $serviceBinaryPath -Destination (Join-Path $publishDirectory 'PrintHub.exe') -Force
+    Copy-Item -LiteralPath $managerBinaryPath -Destination (Join-Path $publishDirectory 'PrintHubManager.exe') -Force
+
+    Write-Info "构建成功，发布目录：$publishDirectory"
 }
 catch {
     Write-Error "[PrintHub] $($_.Exception.Message)"

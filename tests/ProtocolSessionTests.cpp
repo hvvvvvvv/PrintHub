@@ -1,6 +1,7 @@
 #include <LpdSession.h>
 #include <RawPrintSession.h>
 #include <SnmpRejectSession.h>
+#include <ServiceConfiguration.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -307,6 +308,26 @@ void testMultipleFilesAbortAndUnknownQueue() {
     require(unknownQueueTransport.responses == std::string(1, kNak), "unknown queue did not produce NAK");
 }
 
+void testConfiguredQueueResolver() {
+    const std::vector<LpdQueueMapping> mappings{ { "Sales", "Mapped Printer" } };
+    FakeLpdTransport matchingTransport(std::string(1, kReceiveJob) + "sAlEs\n");
+    FakeFactory matchingFactory;
+    LpdSession matchingSession(matchingFactory, [&mappings](const std::string& queue) {
+        return ResolveLpdQueuePrinter(mappings, queue);
+    });
+    matchingSession.Run(matchingTransport);
+    require(matchingFactory.jobs.size() == 1, "configured queue did not create a print job");
+
+    FakeLpdTransport unmappedTransport(std::string(1, kReceiveJob) + "Mapped Printer\n");
+    FakeFactory unmappedFactory;
+    LpdSession unmappedSession(unmappedFactory, [&mappings](const std::string& queue) {
+        return ResolveLpdQueuePrinter(mappings, queue);
+    });
+    unmappedSession.Run(unmappedTransport);
+    require(unmappedFactory.jobs.empty() && unmappedTransport.responses == std::string(1, kNak),
+        "unmapped printer name was accepted as an LPD queue");
+}
+
 void testRawCommitAndEmptyCancel() {
     FakeFactory factory;
     RawPrintSession session(factory, "Printer");
@@ -328,6 +349,7 @@ int main() {
         testDataFirstAndCountZero();
         testWindowsPlaceholderAndInvalidTerminator();
         testMultipleFilesAbortAndUnknownQueue();
+        testConfiguredQueueResolver();
         testRawCommitAndEmptyCancel();
         testSnmpRejectSession();
     }
