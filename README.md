@@ -104,7 +104,3 @@ Windows 的“添加标准 TCP/IP 打印机端口”向导可能会等待 SNMP �
 - [服务管理面板](docs/service-manager.md)
 - [Windows LPR 兼容性验证](docs/windows-lpr-compatibility.md)
 - [Windows SNMP 快速拒绝](docs/windows-snmp-reject.md)
-
-## 许可证
-
-本项目使用 [WTFPL v2](LICENSE) 许可证。
