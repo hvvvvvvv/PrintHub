@@ -39,11 +39,15 @@ struct ServiceConfiguration {
     static constexpr uint16_t kDefaultRawPort = 9100;
     static constexpr uint16_t kDefaultLpdPort = 515;
     static constexpr int kDefaultMinThreads = 1;
+    static constexpr int kDefaultMaxPendingClients = 256;
+    static constexpr size_t kDefaultLpdMaxControlFileBytes = 4 * 1024 * 1024;
 
     std::vector<RawServerConfiguration> rawServers;
     std::vector<LpdQueueMapping> lpdQueues;
     int rawServerMinThreads = kDefaultMinThreads;
+    int maxPendingClients = kDefaultMaxPendingClients;
     uint16_t lpdPort = kDefaultLpdPort;
+    size_t lpdMaxControlFileBytes = kDefaultLpdMaxControlFileBytes;
     std::string listenAddress = "0.0.0.0";
     bool snmpReject = false;
     int lpdMinThreads = kDefaultMinThreads;

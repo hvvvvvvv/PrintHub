@@ -1,5 +1,6 @@
 #include <ServiceConfiguration.hpp>
 #include <ManagerCommands.hpp>
+#include <BoundedQueue.hpp>
 
 #include <algorithm>
 #include <cstdlib>
@@ -26,7 +27,8 @@ void testRoundTrip() {
     const std::vector<std::string> input{
         "--raw-server", "Office Printer:9100", "--raw-server", "Second printer:9200",
         "--lpd-queue", "Office=Office Printer", "--lpd-queue", "Reports=Second printer",
-        "--raw-server-min-threads", "2", "--lpd-port", "1515", "--listen-address", "192.168.1.20",
+        "--raw-server-min-threads", "2", "--max-pending-clients", "512", "--lpd-port", "1515",
+        "--lpd-max-control-file-bytes", "1048576", "--listen-address", "192.168.1.20",
         "--snmp-reject", "--lpd-min-threads", "3", "--log-level", "debug"
     };
     const auto configuration = ServiceConfiguration::Parse(input);
@@ -35,6 +37,8 @@ void testRoundTrip() {
     require(configuration.rawServers[1].port == 9200, "RAW port changed");
     require(configuration.lpdQueues.size() == 2, "LPD queue entries were not parsed");
     require(configuration.lpdQueues[1].printerName == "Second printer", "LPD printer name with spaces changed");
+    require(configuration.maxPendingClients == 512, "Maximum pending clients was not parsed");
+    require(configuration.lpdMaxControlFileBytes == 1048576, "LPD control file maximum was not parsed");
     const auto roundTrip = ServiceConfiguration::Parse(configuration.ToArguments());
     require(roundTrip.rawServers.size() == 2 && roundTrip.lpdQueues.size() == 2, "Configuration did not round trip");
 }
@@ -50,6 +54,8 @@ void testValidation() {
     requireThrows({ "--raw-server", "Printer:0" });
     requireThrows({ "--raw-server", "One:9100", "--raw-server", "Two:9100" });
     requireThrows({ "--raw-server-min-threads", "0" });
+    requireThrows({ "--max-pending-clients", "0" });
+    requireThrows({ "--lpd-max-control-file-bytes", "0" });
     requireThrows({ "--not-a-service-option" });
 }
 
@@ -58,7 +64,8 @@ void testExplicitSerialization() {
     configuration.lpdQueues.push_back({ "Office", "Office Printer" });
     const auto defaults = configuration.ToArguments(ServiceConfigurationArgumentFormat::Explicit);
     const std::vector<std::string> expectedDefaults{
-        "--lpd-queue", "Office=Office Printer", "--raw-server-min-threads", "1", "--lpd-port", "515", "--listen-address", "0.0.0.0",
+        "--lpd-queue", "Office=Office Printer", "--raw-server-min-threads", "1", "--max-pending-clients", "256",
+        "--lpd-port", "515", "--lpd-max-control-file-bytes", "4194304", "--listen-address", "0.0.0.0",
         "--lpd-min-threads", "1", "--log-level", "info"
     };
     require(defaults == expectedDefaults, "Explicit serialization omitted default values");
@@ -106,6 +113,15 @@ void testLpdQueueResolution() {
         "LPD resolver unexpectedly fell back to printer name");
 }
 
+void testBoundedPendingQueue() {
+    BoundedQueue<int> queue(2);
+    require(queue.TryPush(1) && queue.TryPush(2), "Bounded queue rejected available capacity");
+    require(!queue.TryPush(3), "Bounded queue accepted an item over capacity");
+    require(queue.Size() == 2 && queue.Pop() == 1, "Bounded queue changed FIFO order");
+    queue.Clear();
+    require(queue.Empty(), "Bounded queue did not clear queued clients during stop");
+}
+
 } // namespace
 
 int main() {
@@ -116,6 +132,7 @@ int main() {
         testWindowsQuoting();
         testManagerCommands();
         testLpdQueueResolution();
+        testBoundedPendingQueue();
     } catch (const std::exception& error) {
         std::cerr << "Configuration test failed: " << error.what() << '\n';
         return EXIT_FAILURE;

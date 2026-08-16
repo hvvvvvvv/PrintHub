@@ -10,6 +10,8 @@
 #include <vector>
 #include <conio.h>
 #include <algorithm>
+#include <functional>
+#include <thread>
 #include <Arguments.hpp>
 #include <NetworkRuntime.h>
 #include <SnmpRejectServer.h>
@@ -20,8 +22,9 @@ constexpr auto kLogRotationHour = 0;
 constexpr auto kLogRotationMinute = 0;
 constexpr auto kLogRetentionDays = 7;
 constexpr auto kLogFlushInterval = std::chrono::seconds(3);
-constexpr DWORD kServiceStatusWaitHintMs = 15000;
+constexpr DWORD kServiceStatusWaitHintMs = 60000;
 constexpr DWORD kInitialServiceCheckpoint = 1;
+constexpr DWORD kServiceStopCheckpointIntervalMs = 5000;
 
 } // namespace
 
@@ -122,7 +125,7 @@ static std::vector<std::unique_ptr<PrintServer>> createRawServers() {
 			if (printerName.empty() || port == 0) {
 				throw std::invalid_argument(fmt::format("Invalid raw server configuration: {}:{}", printerName, port));
 			}
-			servers.push_back(std::make_unique<RawPrinting>(printerName, port, g_args->RawServerMinThreads));
+			servers.push_back(std::make_unique<RawPrinting>(printerName, port, g_args->RawServerMinThreads, g_args->MaxPendingClients));
 		}
 	}
 	if (g_args->LpdQueuesConfig.has_value()) {
@@ -132,7 +135,8 @@ static std::vector<std::unique_ptr<PrintServer>> createRawServers() {
 		if (g_args->LpdMinThreads < 1) {
 			throw std::invalid_argument("LPD minimum threads must be at least 1");
 		}
-		servers.push_back(std::make_unique<LPD>(g_args->LpdPort, *g_args->LpdQueuesConfig, g_args->LpdMinThreads));
+		servers.push_back(std::make_unique<LPD>(g_args->LpdPort, *g_args->LpdQueuesConfig, g_args->LpdMinThreads,
+			g_args->LpdMaxControlFileBytes, g_args->MaxPendingClients));
 	}
 	return servers;
 }
@@ -186,7 +190,39 @@ static DWORD WINAPI svcCtrlHandler(DWORD dwControl, DWORD, LPVOID, LPVOID) {
 	}
 }
 
-static int mainRun() {
+class ServiceStopProgressReporter final {
+public:
+    explicit ServiceStopProgressReporter(bool enabled) {
+        if (!enabled) return;
+        m_doneEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        if (!m_doneEvent) {
+            spdlog::warn("Could not create service stop progress event: {}", GetLastError());
+            return;
+        }
+        m_thread = std::jthread([this](std::stop_token) {
+            while (WaitForSingleObject(m_doneEvent, kServiceStopCheckpointIntervalMs) == WAIT_TIMEOUT) {
+                reportServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
+            }
+        });
+    }
+
+    ~ServiceStopProgressReporter() {
+        if (m_doneEvent) {
+            SetEvent(m_doneEvent);
+            if (m_thread.joinable()) m_thread.join();
+            CloseHandle(m_doneEvent);
+        }
+    }
+
+    ServiceStopProgressReporter(const ServiceStopProgressReporter&) = delete;
+    ServiceStopProgressReporter& operator=(const ServiceStopProgressReporter&) = delete;
+
+private:
+    HANDLE m_doneEvent = nullptr;
+    std::jthread m_thread;
+};
+
+static int mainRun(const std::function<void()>& onStarted = {}) {
 	spdlog::default_logger()->info("Starting {} version {}", PROJECT_NAME, PROJECT_VERSION);
 	spdlog::info("Build date: {}", __DATE__);
 	spdlog::info("Build time: {}", __TIME__);
@@ -209,6 +245,7 @@ static int mainRun() {
 			snmpRejectServer->Start();
 			spdlog::info("SNMP reject server started on {}:{}", g_args->ListenAddress, SnmpRejectServer::PORT);
 		}
+		if (onStarted) onStarted();
 
 		while (!g_shutdown.load()) {
 			if (WaitForSingleObject(g_shutdownEvent, INFINITE) != WAIT_OBJECT_0) {
@@ -216,6 +253,7 @@ static int mainRun() {
 				return 1;
 			}
 		}
+		ServiceStopProgressReporter stopProgress(g_serviceStatusHandle != nullptr);
 		for (auto& server : servers) {
 			server->Stop();
 			spdlog::info("server stopped on {}:{}", server->GetListenAddr(), server->GetListenPort());
@@ -239,8 +277,7 @@ static VOID WINAPI svcMain(DWORD, LPTSTR*) {
 		return;
 	}
 	reportServiceStatus(SERVICE_START_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
-	reportServiceStatus(SERVICE_RUNNING);
-	const auto result = g_args->ServiceOperation.has_value() ? EXIT_FAILURE : mainRun();
+	const auto result = g_args->ServiceOperation.has_value() ? EXIT_FAILURE : mainRun([] { reportServiceStatus(SERVICE_RUNNING); });
 	g_servExitCode.store(result);
 	if (result == EXIT_SUCCESS) {
 		reportServiceStatus(SERVICE_STOPPED);

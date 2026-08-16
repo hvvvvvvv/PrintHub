@@ -36,7 +36,8 @@ class LpdSession {
 public:
     using PrinterNameResolver = std::function<std::optional<std::string>(const std::string& queueName)>;
 
-    LpdSession(IPrinterJobFactory& jobFactory, PrinterNameResolver printerNameResolver);
+    LpdSession(IPrinterJobFactory& jobFactory, PrinterNameResolver printerNameResolver,
+        size_t maxControlFileBytes = 4 * 1024 * 1024);
     void Run(ILpdTransport& transport);
 
 private:
@@ -44,4 +45,5 @@ private:
 
     IPrinterJobFactory& m_jobFactory;
     PrinterNameResolver m_printerNameResolver;
+    size_t m_maxControlFileBytes;
 };

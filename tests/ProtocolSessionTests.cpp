@@ -108,6 +108,7 @@ public:
     }
 
     void ReadExactly(size_t size, const BufferCallback& callback) override {
+        ++readExactlyCalls;
         size_t remaining = size;
         while (remaining != 0) {
             if (m_position >= m_input.size() || isDisconnectedBefore(m_position + 1)) {
@@ -136,6 +137,7 @@ public:
 
     void DisconnectAtEnd() { m_disconnectAt = m_input.size(); }
     std::string responses;
+    size_t readExactlyCalls = 0;
 
 private:
     bool isDisconnectedBefore(size_t position) const {
@@ -217,7 +219,7 @@ void testExactCountControlFirst() {
         + fileCommand(kReceiveDataFile, data.size(), "dfA") + data + '\0';
     FakeLpdTransport transport(std::move(input));
     FakeFactory factory;
-    LpdSession session(factory, [](const std::string&) { return std::optional<std::string>("Printer"); });
+    LpdSession session(factory, [](const std::string&) { return std::optional<std::string>("Printer"); }, control.size());
     session.Run(transport);
 
     require(factory.jobs.size() == 1, "exact-count job was not created");
@@ -225,6 +227,18 @@ void testExactCountControlFirst() {
     require(factory.jobs.front()->documentName == "Windows job", "J control did not update document name");
     require(factory.jobs.front()->data == data, "binary data was changed");
     require(transport.responses == std::string(5, kAck), "exact-count ACK sequence changed");
+}
+
+void testOversizedControlFileIsRejectedBeforeRead() {
+    FakeLpdTransport transport(receiveJobPrefix() + fileCommand(kReceiveControlFile, 5, "cfA"));
+    FakeFactory factory;
+    LpdSession session(factory, [](const std::string&) { return std::optional<std::string>("Printer"); }, 4);
+    session.Run(transport);
+
+    require(transport.responses == std::string{ kAck, kNak }, "oversized LPD control file did not return NAK");
+    require(transport.readExactlyCalls == 0, "oversized LPD control file content was read");
+    require(factory.jobs.size() == 1 && !factory.jobs.front()->committed && factory.jobs.front()->canceled,
+        "oversized LPD control file left a submitted print job");
 }
 
 void testDataFirstAndCountZero() {
@@ -346,6 +360,7 @@ void testRawCommitAndEmptyCancel() {
 int main() {
     try {
         testExactCountControlFirst();
+        testOversizedControlFileIsRejectedBeforeRead();
         testDataFirstAndCountZero();
         testWindowsPlaceholderAndInvalidTerminator();
         testMultipleFilesAbortAndUnknownQueue();

@@ -18,8 +18,10 @@ public:
 
     static constexpr auto ARGS_RAW_SERVERS = "--raw-server";
     static constexpr auto ARGS_RAW_SERVER_MIN_THREADS = "--raw-server-min-threads";
+    static constexpr auto ARGS_MAX_PENDING_CLIENTS = "--max-pending-clients";
     static constexpr auto ARGS_LPD_QUEUE = "--lpd-queue";
     static constexpr auto ARGS_LPD_PORT = "--lpd-port";
+    static constexpr auto ARGS_LPD_MAX_CONTROL_FILE_BYTES = "--lpd-max-control-file-bytes";
     static constexpr auto ARGS_LPD_MIN_THREADS = "--lpd-min-threads";
     static constexpr auto ARGS_LISTEN_ADDRESS = "--listen-address";
     static constexpr auto ARGS_SNMP_REJECT = "--snmp-reject";
@@ -55,7 +57,9 @@ public:
     std::optional<RawServersConfigType> RawServersConfig;
     std::optional<LpdQueuesConfigType> LpdQueuesConfig;
     int RawServerMinThreads;
+    int MaxPendingClients;
     uint16_t LpdPort;
+    size_t LpdMaxControlFileBytes;
     std::string ListenAddress;
     bool SnmpReject;
     int LpdMinThreads;

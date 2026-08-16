@@ -20,6 +20,7 @@ struct CManagerDialog::WorkItem {
     ServiceConfiguration configuration;
     ServiceSnapshot snapshot;
     HWND targetWindow = nullptr;
+    std::shared_ptr<OperationState> state;
 };
 
 struct CManagerDialog::WorkResult {
@@ -27,7 +28,33 @@ struct CManagerDialog::WorkResult {
     CString details;
 };
 
+struct CManagerDialog::OperationState {
+    bool cancelled = false;
+    std::mutex mutex;
+};
+
+struct CManagerDialog::StartupLoadResult {
+    std::vector<std::wstring> printers;
+    DWORD printerError = ERROR_SUCCESS;
+    ServiceSnapshot snapshot;
+    std::optional<ServiceConfiguration> configuration;
+    std::wstring executable;
+    bool unknownConfiguration = false;
+};
+
+struct CManagerDialog::StartupLoadState {
+    HWND targetWindow = nullptr;
+    std::atomic<bool> cancelled = false;
+    std::mutex mutex;
+    std::unique_ptr<StartupLoadResult> result;
+};
+
+struct CManagerDialog::StartupLoadWorkItem {
+    std::shared_ptr<StartupLoadState> state;
+};
+
 BEGIN_MESSAGE_MAP(CManagerDialog, CDialogEx)
+    ON_WM_DESTROY()
     ON_WM_GETMINMAXINFO()
     ON_WM_SIZE()
     ON_BN_CLICKED(IDC_BROWSE_SERVICE, &CManagerDialog::OnBrowseService)
@@ -48,10 +75,13 @@ BEGIN_MESSAGE_MAP(CManagerDialog, CDialogEx)
     ON_EN_CHANGE(IDC_RAW_THREADS, &CManagerDialog::OnConfigurationChanged)
     ON_EN_CHANGE(IDC_LPD_PORT, &CManagerDialog::OnConfigurationChanged)
     ON_EN_CHANGE(IDC_LPD_THREADS, &CManagerDialog::OnConfigurationChanged)
+    ON_EN_CHANGE(IDC_MAX_PENDING_CLIENTS, &CManagerDialog::OnConfigurationChanged)
+    ON_EN_CHANGE(IDC_LPD_MAX_CONTROL_BYTES, &CManagerDialog::OnConfigurationChanged)
     ON_CBN_SELCHANGE(IDC_LOG_LEVEL, &CManagerDialog::OnConfigurationChanged)
     ON_BN_CLICKED(IDC_RAW_MAPPING_PAGE, &CManagerDialog::OnShowRawMapping)
     ON_BN_CLICKED(IDC_LPD_MAPPING_PAGE, &CManagerDialog::OnShowLpdMapping)
     ON_MESSAGE(kOperationCompletedMessage, &CManagerDialog::OnOperationCompleted)
+    ON_MESSAGE(kStartupLoadCompletedMessage, &CManagerDialog::OnStartupLoadCompleted)
 END_MESSAGE_MAP()
 
 CManagerDialog::CManagerDialog() : CDialogEx(IDD_MANAGER_DIALOG) {}
@@ -72,6 +102,8 @@ BOOL CManagerDialog::OnInitDialog() {
     m_lpdQueueList.SubclassDlgItem(IDC_LPD_QUEUE_LIST, this);
     m_lpdPort.SubclassDlgItem(IDC_LPD_PORT, this);
     m_lpdThreads.SubclassDlgItem(IDC_LPD_THREADS, this);
+    m_maxPendingClients.SubclassDlgItem(IDC_MAX_PENDING_CLIENTS, this);
+    m_lpdMaxControlBytes.SubclassDlgItem(IDC_LPD_MAX_CONTROL_BYTES, this);
     m_snmpReject.SubclassDlgItem(IDC_SNMP_REJECT, this);
     m_logLevel.SubclassDlgItem(IDC_LOG_LEVEL, this);
     m_preview.SubclassDlgItem(IDC_COMMAND_PREVIEW, this);
@@ -97,20 +129,29 @@ BOOL CManagerDialog::OnInitDialog() {
     m_rawPort.SetWindowTextW(L"9100");
     m_lpdPort.SetWindowTextW(L"515");
     m_lpdThreads.SetWindowTextW(L"1");
-    PopulatePrinters();
+    m_maxPendingClients.SetWindowTextW(std::to_wstring(ServiceConfiguration::kDefaultMaxPendingClients).c_str());
+    m_lpdMaxControlBytes.SetWindowTextW(std::to_wstring(ServiceConfiguration::kDefaultLpdMaxControlFileBytes).c_str());
     UpdateMappingTab();
-    RefreshServiceStatus(true);
     UpdatePreview();
     CaptureBaseLayout();
     m_layoutReady = true;
     CRect client;
     GetClientRect(&client);
     LayoutControls(client.Width(), client.Height());
+    m_status.SetWindowTextW(L"服务状态：正在加载打印机和服务配置...");
+    StartStartupLoad();
     return TRUE;
 }
 
 void CManagerDialog::OnCancel() {
     if (!m_busy) CDialogEx::OnCancel();
+}
+
+void CManagerDialog::OnDestroy() {
+    CancelStartupLoad();
+    CancelOperation();
+    DetachControlWrappers();
+    CDialogEx::OnDestroy();
 }
 
 void CManagerDialog::OnGetMinMaxInfo(MINMAXINFO* info) {
@@ -136,7 +177,10 @@ void CManagerDialog::OnBrowseService() {
     }
 }
 
-void CManagerDialog::OnRefresh() { RefreshServiceStatus(true); }
+void CManagerDialog::OnRefresh() {
+    CancelStartupLoad();
+    RefreshServiceStatus(true);
+}
 
 void CManagerDialog::OnAddRaw() {
     CString printer;
@@ -260,23 +304,135 @@ void CManagerDialog::OnConfigurationChanged() {
     UpdatePreview();
 }
 
-void CManagerDialog::PopulatePrinters() {
+std::vector<std::wstring> CManagerDialog::EnumeratePrinters(DWORD& error) {
+    error = ERROR_SUCCESS;
     DWORD bytes = 0;
     DWORD count = 0;
-    EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, nullptr, 2, nullptr, 0, &bytes, &count);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes == 0) return;
+    if (EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, nullptr, 2, nullptr, 0, &bytes, &count)) {
+        return {};
+    }
+    const auto firstError = GetLastError();
+    if (firstError != ERROR_INSUFFICIENT_BUFFER) {
+        error = firstError;
+        return {};
+    }
+    if (bytes == 0) return {};
     std::vector<BYTE> buffer(bytes);
-    if (!EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, nullptr, 2, buffer.data(), bytes, &bytes, &count)) return;
+    if (!EnumPrintersW(PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS, nullptr, 2, buffer.data(), bytes, &bytes, &count)) {
+        error = GetLastError();
+        return {};
+    }
+    std::vector<std::wstring> result;
     auto* printers = reinterpret_cast<PRINTER_INFO_2W*>(buffer.data());
     for (DWORD index = 0; index < count; ++index) {
         if (printers[index].pPrinterName) {
-            if (m_printerName.FindStringExact(-1, printers[index].pPrinterName) == CB_ERR) {
-                m_printerName.AddString(printers[index].pPrinterName);
-            }
-            if (m_lpdPrinterName.FindStringExact(-1, printers[index].pPrinterName) == CB_ERR) {
-                m_lpdPrinterName.AddString(printers[index].pPrinterName);
-            }
+            result.emplace_back(printers[index].pPrinterName);
         }
+    }
+    return result;
+}
+
+void CManagerDialog::PopulatePrinters(const std::vector<std::wstring>& printers) {
+    for (const auto& printer : printers) {
+        if (m_printerName.FindStringExact(-1, printer.c_str()) == CB_ERR) {
+            m_printerName.AddString(printer.c_str());
+        }
+        if (m_lpdPrinterName.FindStringExact(-1, printer.c_str()) == CB_ERR) {
+            m_lpdPrinterName.AddString(printer.c_str());
+        }
+    }
+}
+
+CManagerDialog::StartupLoadResult CManagerDialog::LoadStartupData() {
+    StartupLoadResult result;
+    result.printers = EnumeratePrinters(result.printerError);
+    result.snapshot = QueryService();
+    if (result.snapshot.error != ERROR_SUCCESS || !result.snapshot.installed) return result;
+
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(result.snapshot.imagePath.c_str(), &argc);
+    if (!argv || argc < 1) {
+        result.unknownConfiguration = true;
+        if (argv) LocalFree(argv);
+        return result;
+    }
+    try {
+        std::vector<std::string> arguments;
+        for (int index = 1; index < argc; ++index) arguments.push_back(ToNarrow(argv[index]));
+        result.configuration = ServiceConfiguration::Parse(arguments);
+        result.executable = argv[0];
+    } catch (const std::exception&) {
+        result.unknownConfiguration = true;
+    }
+    LocalFree(argv);
+    return result;
+}
+
+void CManagerDialog::StartStartupLoad() {
+    m_startupLoadState = std::make_shared<StartupLoadState>();
+    m_startupLoadState->targetWindow = GetSafeHwnd();
+    auto* item = new StartupLoadWorkItem{ m_startupLoadState };
+    if (!AfxBeginThread(RunStartupLoadThread, item)) {
+        delete item;
+        m_startupLoadState.reset();
+        m_status.SetWindowTextW(L"服务状态：无法创建后台加载线程");
+    }
+}
+
+void CManagerDialog::CancelStartupLoad() {
+    if (!m_startupLoadState) return;
+    m_startupLoadState->cancelled.store(true);
+    std::lock_guard<std::mutex> lock(m_startupLoadState->mutex);
+    m_startupLoadState->result.reset();
+}
+
+void CManagerDialog::CancelOperation() {
+    if (!m_operationState) return;
+    {
+        std::lock_guard<std::mutex> lock(m_operationState->mutex);
+        m_operationState->cancelled = true;
+    }
+    MSG message{};
+    while (::PeekMessageW(&message, GetSafeHwnd(), kOperationCompletedMessage,
+        kOperationCompletedMessage, PM_REMOVE)) {
+        delete reinterpret_cast<WorkResult*>(message.lParam);
+    }
+}
+
+void CManagerDialog::ApplyStartupLoadResult(const StartupLoadResult& result) {
+    PopulatePrinters(result.printers);
+    if (result.snapshot.error != ERROR_SUCCESS) {
+        m_status.SetWindowTextW((CString(L"服务状态查询失败：") + FormatWin32Error(result.snapshot.error)).GetString());
+        return;
+    }
+    if (!result.snapshot.installed) {
+        m_status.SetWindowTextW(L"服务状态：未安装");
+        m_unknownExistingConfiguration = false;
+    } else if (result.unknownConfiguration || !result.configuration.has_value()) {
+        m_unknownExistingConfiguration = true;
+        m_status.SetWindowTextW(L"服务状态：已安装；配置包含未识别参数，更新前需确认覆盖");
+    } else {
+        m_status.SetWindowTextW(result.snapshot.running ? L"服务状态：已安装，正在运行" : L"服务状态：已安装，已停止");
+        LoadConfiguration(*result.configuration);
+        m_servicePath.SetWindowTextW(result.executable.c_str());
+        m_unknownExistingConfiguration = false;
+    }
+    if (result.printerError != ERROR_SUCCESS) {
+        CString currentStatus;
+        m_status.GetWindowTextW(currentStatus);
+        m_status.SetWindowTextW((currentStatus + L"；打印机列表加载失败：" + FormatWin32Error(result.printerError)).GetString());
+    }
+}
+
+void CManagerDialog::DetachControlWrappers() {
+    for (CWnd* control : { static_cast<CWnd*>(&m_servicePath), static_cast<CWnd*>(&m_status), static_cast<CWnd*>(&m_listenAddress),
+        static_cast<CWnd*>(&m_rawThreads), static_cast<CWnd*>(&m_printerName), static_cast<CWnd*>(&m_rawPort),
+        static_cast<CWnd*>(&m_rawList), static_cast<CWnd*>(&m_rawMappingPage), static_cast<CWnd*>(&m_lpdMappingPage),
+        static_cast<CWnd*>(&m_lpdQueueName), static_cast<CWnd*>(&m_lpdPrinterName), static_cast<CWnd*>(&m_lpdQueueList),
+        static_cast<CWnd*>(&m_lpdPort), static_cast<CWnd*>(&m_lpdThreads), static_cast<CWnd*>(&m_maxPendingClients),
+        static_cast<CWnd*>(&m_lpdMaxControlBytes), static_cast<CWnd*>(&m_snmpReject), static_cast<CWnd*>(&m_logLevel),
+        static_cast<CWnd*>(&m_preview) }) {
+        if (control->GetSafeHwnd()) control->UnsubclassWindow();
     }
 }
 
@@ -347,6 +503,8 @@ void CManagerDialog::LoadConfiguration(const ServiceConfiguration& configuration
     m_rawThreads.SetWindowTextW(std::to_wstring(configuration.rawServerMinThreads).c_str());
     m_lpdPort.SetWindowTextW(std::to_wstring(configuration.lpdPort).c_str());
     m_lpdThreads.SetWindowTextW(std::to_wstring(configuration.lpdMinThreads).c_str());
+    m_maxPendingClients.SetWindowTextW(std::to_wstring(configuration.maxPendingClients).c_str());
+    m_lpdMaxControlBytes.SetWindowTextW(std::to_wstring(configuration.lpdMaxControlFileBytes).c_str());
     m_snmpReject.SetCheck(configuration.snmpReject ? BST_CHECKED : BST_UNCHECKED);
     m_logLevel.SelectString(-1, ToWide(ServiceConfiguration::LogLevelToString(configuration.logLevel)).c_str());
     UpdatePreview();
@@ -354,11 +512,13 @@ void CManagerDialog::LoadConfiguration(const ServiceConfiguration& configuration
 
 std::optional<ServiceConfiguration> CManagerDialog::ReadConfiguration(bool showErrors) {
     try {
-        CString listenAddress, rawThreads, lpdPort, lpdThreads;
+        CString listenAddress, rawThreads, lpdPort, lpdThreads, maxPendingClients, lpdMaxControlBytes;
         m_listenAddress.GetWindowTextW(listenAddress);
         m_rawThreads.GetWindowTextW(rawThreads);
         m_lpdPort.GetWindowTextW(lpdPort);
         m_lpdThreads.GetWindowTextW(lpdThreads);
+        m_maxPendingClients.GetWindowTextW(maxPendingClients);
+        m_lpdMaxControlBytes.GetWindowTextW(lpdMaxControlBytes);
         CString level;
         const int levelIndex = m_logLevel.GetCurSel();
         if (levelIndex == CB_ERR) throw std::invalid_argument("请选择日志级别");
@@ -372,7 +532,8 @@ std::optional<ServiceConfiguration> CManagerDialog::ReadConfiguration(bool showE
             arguments.push_back("--lpd-queue");
             arguments.push_back(entry.queueName + "=" + entry.printerName);
         }
-        arguments.insert(arguments.end(), { "--raw-server-min-threads", ToNarrow(rawThreads.GetString()), "--lpd-port", ToNarrow(lpdPort.GetString()),
+        arguments.insert(arguments.end(), { "--raw-server-min-threads", ToNarrow(rawThreads.GetString()), "--max-pending-clients", ToNarrow(maxPendingClients.GetString()),
+            "--lpd-port", ToNarrow(lpdPort.GetString()), "--lpd-max-control-file-bytes", ToNarrow(lpdMaxControlBytes.GetString()),
             "--listen-address", ToNarrow(listenAddress.GetString()), "--lpd-min-threads", ToNarrow(lpdThreads.GetString()), "--log-level", ToNarrow(level.GetString()) });
         if (m_snmpReject.GetCheck() == BST_CHECKED) arguments.push_back("--snmp-reject");
         return ServiceConfiguration::Parse(arguments);
@@ -418,7 +579,7 @@ void CManagerDialog::CaptureBaseLayout() {
 }
 
 CSize CManagerDialog::MinimumClientSize() const {
-    RECT units{ 0, 0, 500, 340 };
+    RECT units{ 0, 0, 500, 358 };
     const_cast<CManagerDialog*>(this)->MapDialogRect(&units);
     return { units.right, units.bottom };
 }
@@ -427,6 +588,8 @@ void CManagerDialog::LayoutControls(int width, int height) {
     if (m_baseLayout.empty()) return;
     const int horizontalExtra = (std::max)(0, width - static_cast<int>(m_baseClientSize.cx));
     const int verticalExtra = (std::max)(0, height - static_cast<int>(m_baseClientSize.cy));
+    const int mappingExtra = verticalExtra * 2 / 3;
+    const int previewExtra = verticalExtra - mappingExtra;
     const auto move = [this](UINT identifier, int offsetX, int offsetY, int widthExtra = 0, int heightExtra = 0) {
         const auto iterator = m_baseLayout.find(identifier);
         if (iterator == m_baseLayout.end()) return;
@@ -445,11 +608,11 @@ void CManagerDialog::LayoutControls(int width, int height) {
     move(IDC_REFRESH, horizontalExtra, 0);
     move(IDC_SERVICE_STATUS, 0, 0, horizontalExtra);
     move(IDC_PROTOCOL_GROUP, 0, 0, horizontalExtra);
-    move(IDC_RAW_GROUP, 0, 0, horizontalExtra, verticalExtra);
-    move(IDC_RAW_LIST, 0, 0, horizontalExtra, verticalExtra);
-    move(IDC_LPD_QUEUE_LIST, 0, 0, horizontalExtra, verticalExtra);
-    move(IDC_COMMAND_GROUP, 0, verticalExtra, horizontalExtra);
-    move(IDC_COMMAND_PREVIEW, 0, verticalExtra, horizontalExtra);
+    move(IDC_RAW_GROUP, 0, 0, horizontalExtra, mappingExtra);
+    move(IDC_RAW_LIST, 0, 0, horizontalExtra, mappingExtra);
+    move(IDC_LPD_QUEUE_LIST, 0, 0, horizontalExtra, mappingExtra);
+    move(IDC_COMMAND_GROUP, 0, mappingExtra, horizontalExtra, previewExtra);
+    move(IDC_COMMAND_PREVIEW, 0, mappingExtra, horizontalExtra, previewExtra);
     for (const auto identifier : { IDC_INSTALL_UPDATE, IDC_START_SERVICE, IDC_STOP_SERVICE, IDC_RESTART_SERVICE,
         IDC_UNINSTALL_SERVICE, IDC_OPEN_LOGS, IDC_OPERATION_HINT }) {
         move(identifier, 0, verticalExtra);
@@ -458,6 +621,7 @@ void CManagerDialog::LayoutControls(int width, int height) {
 }
 
 void CManagerDialog::StartAction(Action action) {
+    CancelStartupLoad();
     CString servicePath;
     m_servicePath.GetWindowTextW(servicePath);
     const auto attributes = servicePath.IsEmpty() ? INVALID_FILE_ATTRIBUTES : GetFileAttributesW(servicePath);
@@ -465,7 +629,8 @@ void CManagerDialog::StartAction(Action action) {
         AfxMessageBox(L"请选择存在的 PrintHub.exe 服务程序。", MB_ICONWARNING);
         return;
     }
-    WorkItem work{ action, std::wstring(servicePath.GetString()), {}, QueryService(), GetSafeHwnd() };
+    WorkItem work{ action, std::wstring(servicePath.GetString()), {}, QueryService(), GetSafeHwnd(),
+        std::make_shared<OperationState>() };
     if (work.snapshot.error != ERROR_SUCCESS) {
         AfxMessageBox((CString(L"无法读取服务状态：") + FormatWin32Error(work.snapshot.error)), MB_ICONERROR);
         return;
@@ -499,9 +664,11 @@ void CManagerDialog::StartAction(Action action) {
         return;
     }
     auto* parameter = new WorkItem(std::move(work));
+    m_operationState = parameter->state;
     SetBusy(true);
     if (!AfxBeginThread(RunOperationThread, parameter)) {
         delete parameter;
+        m_operationState.reset();
         SetBusy(false);
         AfxMessageBox(L"无法创建后台操作线程。", MB_ICONERROR);
     }
@@ -525,6 +692,8 @@ void CManagerDialog::SetBusy(bool busy) {
     m_lpdPrinterName.EnableWindow(!busy);
     m_lpdPort.EnableWindow(!busy);
     m_lpdThreads.EnableWindow(!busy);
+    m_maxPendingClients.EnableWindow(!busy);
+    m_lpdMaxControlBytes.EnableWindow(!busy);
     m_snmpReject.EnableWindow(!busy);
     m_logLevel.EnableWindow(!busy);
     if (busy) m_status.SetWindowTextW(L"服务状态：正在执行操作...");
@@ -533,20 +702,50 @@ void CManagerDialog::SetBusy(bool busy) {
 UINT __cdecl CManagerDialog::RunOperationThread(LPVOID parameter) {
     std::unique_ptr<WorkItem> work(static_cast<WorkItem*>(parameter));
     auto* result = new WorkResult(RunAction(*work));
-    if (!::PostMessage(work->targetWindow, kOperationCompletedMessage, 0,
+    std::lock_guard<std::mutex> lock(work->state->mutex);
+    if (work->state->cancelled || !::PostMessageW(work->targetWindow, kOperationCompletedMessage, 0,
         reinterpret_cast<LPARAM>(result))) {
         delete result;
     }
     return 0;
 }
 
+UINT __cdecl CManagerDialog::RunStartupLoadThread(LPVOID parameter) {
+    std::unique_ptr<StartupLoadWorkItem> work(static_cast<StartupLoadWorkItem*>(parameter));
+    auto result = std::make_unique<StartupLoadResult>(LoadStartupData());
+    const auto& state = work->state;
+    if (state->cancelled.load()) return 0;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->cancelled.load()) return 0;
+        state->result = std::move(result);
+    }
+    if (!::PostMessageW(state->targetWindow, kStartupLoadCompletedMessage, 0, 0)) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->result.reset();
+    }
+    return 0;
+}
+
 LRESULT CManagerDialog::OnOperationCompleted(WPARAM, LPARAM parameter) {
     std::unique_ptr<WorkResult> result(reinterpret_cast<WorkResult*>(parameter));
+    m_operationState.reset();
     SetBusy(false);
     RefreshServiceStatus(false);
     CString message = result->success ? L"操作已完成。" : L"操作失败。";
     if (!result->details.IsEmpty()) message += L"\r\n\r\n" + result->details;
     AfxMessageBox(message, result->success ? MB_ICONINFORMATION : MB_ICONERROR);
+    return 0;
+}
+
+LRESULT CManagerDialog::OnStartupLoadCompleted(WPARAM, LPARAM) {
+    if (!m_startupLoadState || m_startupLoadState->cancelled.load()) return 0;
+    std::unique_ptr<StartupLoadResult> result;
+    {
+        std::lock_guard<std::mutex> lock(m_startupLoadState->mutex);
+        result = std::move(m_startupLoadState->result);
+    }
+    if (result) ApplyStartupLoadResult(*result);
     return 0;
 }
 
@@ -654,7 +853,7 @@ CManagerDialog::ServiceSnapshot CManagerDialog::QueryService() {
 }
 
 bool CManagerDialog::WaitForServiceDeletion() {
-    for (int attempt = 0; attempt < 100; ++attempt) {
+    for (int attempt = 0; attempt < 240; ++attempt) {
         SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
         if (!manager) return false;
         SC_HANDLE service = OpenServiceW(manager, kServiceName, SERVICE_QUERY_STATUS);
@@ -662,7 +861,7 @@ bool CManagerDialog::WaitForServiceDeletion() {
         if (service) CloseServiceHandle(service);
         CloseServiceHandle(manager);
         if (error == ERROR_SERVICE_DOES_NOT_EXIST) return true;
-        Sleep(100);
+        Sleep(250);
     }
     return false;
 }

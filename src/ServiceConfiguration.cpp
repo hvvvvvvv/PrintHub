@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <limits>
 #include <set>
 #include <stdexcept>
 
@@ -11,7 +12,9 @@ namespace {
 constexpr auto kRawServer = "--raw-server";
 constexpr auto kLpdQueue = "--lpd-queue";
 constexpr auto kRawServerMinThreads = "--raw-server-min-threads";
+constexpr auto kMaxPendingClients = "--max-pending-clients";
 constexpr auto kLpdPort = "--lpd-port";
+constexpr auto kLpdMaxControlFileBytes = "--lpd-max-control-file-bytes";
 constexpr auto kLpdMinThreads = "--lpd-min-threads";
 constexpr auto kListenAddress = "--listen-address";
 constexpr auto kSnmpReject = "--snmp-reject";
@@ -33,6 +36,16 @@ int parseThreadCount(const std::string& text, const char* name) {
         throw std::invalid_argument(std::string("Invalid ") + name + ": " + text);
     }
     return value;
+}
+
+size_t parseByteCount(const std::string& text, const char* name) {
+    uint64_t value = 0;
+    const auto [position, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (text.empty() || error != std::errc{} || position != text.data() + text.size() || value == 0 ||
+        value > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+        throw std::invalid_argument(std::string("Invalid ") + name + ": " + text);
+    }
+    return static_cast<size_t>(value);
 }
 
 std::string lowercase(std::string value) {
@@ -90,8 +103,12 @@ ServiceConfiguration ServiceConfiguration::Parse(const std::vector<std::string>&
             result.lpdQueues.push_back({ value.substr(0, separator), value.substr(separator + 1) });
         } else if (argument == kRawServerMinThreads) {
             result.rawServerMinThreads = parseThreadCount(requireValue(arguments, position, kRawServerMinThreads), "raw server minimum threads");
+        } else if (argument == kMaxPendingClients) {
+            result.maxPendingClients = parseThreadCount(requireValue(arguments, position, kMaxPendingClients), "maximum pending clients");
         } else if (argument == kLpdPort) {
             result.lpdPort = parsePort(requireValue(arguments, position, kLpdPort), "LPD port");
+        } else if (argument == kLpdMaxControlFileBytes) {
+            result.lpdMaxControlFileBytes = parseByteCount(requireValue(arguments, position, kLpdMaxControlFileBytes), "LPD maximum control file bytes");
         } else if (argument == kLpdMinThreads) {
             result.lpdMinThreads = parseThreadCount(requireValue(arguments, position, kLpdMinThreads), "LPD minimum threads");
         } else if (argument == kListenAddress) {
@@ -128,9 +145,17 @@ std::vector<std::string> ServiceConfiguration::ToArguments(ServiceConfigurationA
         result.push_back(kRawServerMinThreads);
         result.push_back(std::to_string(rawServerMinThreads));
     }
+    if (includeDefaults || maxPendingClients != kDefaultMaxPendingClients) {
+        result.push_back(kMaxPendingClients);
+        result.push_back(std::to_string(maxPendingClients));
+    }
     if (includeDefaults || lpdPort != kDefaultLpdPort) {
         result.push_back(kLpdPort);
         result.push_back(std::to_string(lpdPort));
+    }
+    if (includeDefaults || lpdMaxControlFileBytes != kDefaultLpdMaxControlFileBytes) {
+        result.push_back(kLpdMaxControlFileBytes);
+        result.push_back(std::to_string(lpdMaxControlFileBytes));
     }
     if (includeDefaults || listenAddress != "0.0.0.0") {
         result.push_back(kListenAddress);
@@ -151,8 +176,11 @@ std::vector<std::string> ServiceConfiguration::ToArguments(ServiceConfigurationA
 }
 
 void ServiceConfiguration::Validate(bool requireRunnableListener) const {
-    if (rawServerMinThreads < 1 || lpdMinThreads < 1) {
-        throw std::invalid_argument("Minimum thread counts must be at least 1");
+    if (rawServerMinThreads < 1 || lpdMinThreads < 1 || maxPendingClients < 1) {
+        throw std::invalid_argument("Thread counts and maximum pending clients must be at least 1");
+    }
+    if (lpdMaxControlFileBytes == 0) {
+        throw std::invalid_argument("LPD maximum control file bytes must be at least 1");
     }
     if (lpdPort == 0) {
         throw std::invalid_argument("LPD port cannot be zero");

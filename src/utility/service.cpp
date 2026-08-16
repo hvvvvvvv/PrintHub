@@ -1,10 +1,76 @@
 #include<utility.h>
 #include<fmt/format.h>
 
+#include <algorithm>
+
 namespace utility {
 	namespace {
 		constexpr DWORD kNoServiceArguments = 0;
 		constexpr char kStringTerminator = '\0';
+		constexpr DWORD kServiceStateTimeoutMs = 60000;
+		constexpr DWORD kMinimumPollIntervalMs = 250;
+		constexpr DWORD kMaximumPollIntervalMs = 1000;
+		constexpr DWORD kRecoveryDelayMs = 10000;
+		constexpr DWORD kRecoveryResetSeconds = 24 * 60 * 60;
+
+		void waitForServiceState(SC_HANDLE service, DWORD targetState, const char* action) {
+			const auto deadline = GetTickCount64() + kServiceStateTimeoutMs;
+			while (true) {
+				SERVICE_STATUS_PROCESS status{};
+				DWORD needed = 0;
+				if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status), sizeof(status), &needed)) {
+					throw std::runtime_error(fmt::format("Failed to query service state while {}. Error code: {}", action, GetLastError()));
+				}
+				if (status.dwCurrentState == targetState) return;
+				if (targetState == SERVICE_RUNNING && status.dwCurrentState == SERVICE_STOPPED) {
+					throw std::runtime_error(fmt::format("Service stopped while starting. Win32 exit code: {}, service exit code: {}",
+						status.dwWin32ExitCode, status.dwServiceSpecificExitCode));
+				}
+				if (GetTickCount64() >= deadline) {
+					throw std::runtime_error(fmt::format("Timed out after {} ms while {}", kServiceStateTimeoutMs, action));
+				}
+				const auto hint = status.dwWaitHint == 0 ? kMaximumPollIntervalMs : status.dwWaitHint / 10;
+				Sleep((std::clamp)(hint, kMinimumPollIntervalMs, kMaximumPollIntervalMs));
+			}
+		}
+
+		void waitForServiceDeletion(SC_HANDLE manager, const std::string& serviceName) {
+			const auto deadline = GetTickCount64() + kServiceStateTimeoutMs;
+			while (true) {
+				SC_HANDLE service = OpenServiceA(manager, serviceName.c_str(), SERVICE_QUERY_STATUS);
+				if (!service) {
+					const auto error = GetLastError();
+					if (error == ERROR_SERVICE_DOES_NOT_EXIST) return;
+					if (error != ERROR_SERVICE_MARKED_FOR_DELETE) {
+						throw std::runtime_error(fmt::format("Failed to query service deletion. Error code: {}", error));
+					}
+				}
+				CloseServiceHandle(service);
+				if (GetTickCount64() >= deadline) {
+					throw std::runtime_error(fmt::format("Timed out after {} ms while waiting for service deletion", kServiceStateTimeoutMs));
+				}
+				Sleep(kMinimumPollIntervalMs);
+			}
+		}
+
+		void configureFailureRecovery(SC_HANDLE service) {
+			SC_ACTION actions[3]{};
+			for (auto& action : actions) {
+				action.Type = SC_ACTION_RESTART;
+				action.Delay = kRecoveryDelayMs;
+			}
+			SERVICE_FAILURE_ACTIONSA recovery{};
+			recovery.dwResetPeriod = kRecoveryResetSeconds;
+			recovery.cActions = 3;
+			recovery.lpsaActions = actions;
+			if (!ChangeServiceConfig2A(service, SERVICE_CONFIG_FAILURE_ACTIONS, &recovery)) {
+				throw std::runtime_error(fmt::format("Failed to configure service recovery. Error code: {}", GetLastError()));
+			}
+			SERVICE_FAILURE_ACTIONS_FLAG recoveryFlag{ TRUE };
+			if (!ChangeServiceConfig2A(service, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, &recoveryFlag)) {
+				throw std::runtime_error(fmt::format("Failed to enable service recovery for reported failures. Error code: {}", GetLastError()));
+			}
+		}
 	}
 
 	ServiceManager::ServiceManager(const std::string& serviceName) {
@@ -60,6 +126,7 @@ namespace utility {
 				throw std::runtime_error(fmt::format("Failed to start service {}. Error code: {}", m_serviceName, error));
 			}
 		}
+		waitForServiceState(serviceHandle, SERVICE_RUNNING, "waiting for service startup");
 		CloseServiceHandle(serviceHandle);
 	}
 
@@ -71,11 +138,12 @@ namespace utility {
 		SERVICE_STATUS status;
 		if (!ControlService(serviceHandle, SERVICE_CONTROL_STOP, &status)) {
 			auto error = GetLastError();
-			if (error != ERROR_SERVICE_NOT_ACTIVE) {
+			if (error != ERROR_SERVICE_NOT_ACTIVE && error != ERROR_SERVICE_CANNOT_ACCEPT_CTRL) {
 				CloseServiceHandle(serviceHandle);
 				throw std::runtime_error(fmt::format("Failed to stop service {}. Error code: {}", m_serviceName, error));
 			}
 		}
+		waitForServiceState(serviceHandle, SERVICE_STOPPED, "waiting for service shutdown");
 		CloseServiceHandle(serviceHandle);
 	}
 
@@ -122,32 +190,29 @@ namespace utility {
 		if (!serviceHandle) {
 			throw std::runtime_error(fmt::format("Failed to create service {}. Error code: {}", m_serviceName, GetLastError()));
 		}
-		if (!args.description.has_value()) {
-			CloseServiceHandle(serviceHandle);
-			return;
+		try {
+			configureFailureRecovery(serviceHandle);
+			if (args.description.has_value()) {
+				SERVICE_DESCRIPTIONA desc{};
+				desc.lpDescription = const_cast<LPSTR>(args.description->c_str());
+				if (!ChangeServiceConfig2A(serviceHandle, SERVICE_CONFIG_DESCRIPTION, &desc)) {
+					throw std::runtime_error(fmt::format("Failed to set service description for {}. Error code: {}", m_serviceName, GetLastError()));
+				}
+			}
 		}
-		SERVICE_DESCRIPTIONA desc{};
-		desc.lpDescription = const_cast<LPSTR>(args.description->c_str());
-		if (!ChangeServiceConfig2A(serviceHandle, SERVICE_CONFIG_DESCRIPTION, &desc)) {
+		catch (...) {
+			DeleteService(serviceHandle);
 			CloseServiceHandle(serviceHandle);
-			throw std::runtime_error(fmt::format("Failed to set service description for {}. Error code: {}", m_serviceName, GetLastError()));
+			throw;
 		}
-		
 		CloseServiceHandle(serviceHandle);
 	}
 
 	void ServiceManager::UninstallSrv() {
-		auto serviceHandle = OpenServiceA(m_serviceHandle, m_serviceName.c_str(), SERVICE_STOP | DELETE);
+		StopSrv();
+		auto serviceHandle = OpenServiceA(m_serviceHandle, m_serviceName.c_str(), DELETE);
 		if (!serviceHandle) {
 			throw std::runtime_error(fmt::format("Failed to open service {}. Error code: {}", m_serviceName, GetLastError()));
-		}
-		SERVICE_STATUS status;
-		if (!ControlService(serviceHandle, SERVICE_CONTROL_STOP, &status)) {
-			auto error = GetLastError();
-			if(error != ERROR_SERVICE_NOT_ACTIVE) {
-				CloseServiceHandle(serviceHandle);
-				throw std::runtime_error(fmt::format("Failed to stop service {}. Error code: {}", m_serviceName, error));
-			}
 		}
 		if (!DeleteService(serviceHandle)) {
 			auto error = GetLastError();
@@ -155,5 +220,6 @@ namespace utility {
 			throw std::runtime_error(fmt::format("Failed to delete service {}. Error code: {}", m_serviceName, error));
 		}
 		CloseServiceHandle(serviceHandle);
+		waitForServiceDeletion(m_serviceHandle, m_serviceName);
 	}
 }

@@ -45,15 +45,17 @@ private:
 
 } // namespace
 
-LPD::LPD(uint16_t port, std::vector<LpdQueueMapping> queueMappings, int minThreads)
-    : PrintServer(port, minThreads), m_queueMappings(std::move(queueMappings)) {
+LPD::LPD(uint16_t port, std::vector<LpdQueueMapping> queueMappings, int minThreads,
+    size_t maxControlFileBytes, int maxPendingClients)
+    : PrintServer(port, minThreads, maxPendingClients), m_queueMappings(std::move(queueMappings)),
+      m_maxControlFileBytes(maxControlFileBytes) {
 }
 
 void LPD::handleClient(TcpClient& client) {
     WinspoolPrinterJobFactory jobFactory;
     LpdSession session(jobFactory, [this](const std::string& queueName) {
         return ResolveLpdQueuePrinter(m_queueMappings, queueName);
-    });
+    }, m_maxControlFileBytes);
     TcpLpdTransport transport(client);
     session.Run(transport);
 }

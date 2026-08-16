@@ -98,8 +98,10 @@ void reject(ILpdTransport& transport) {
 
 } // namespace
 
-LpdSession::LpdSession(IPrinterJobFactory& jobFactory, PrinterNameResolver printerNameResolver)
-    : m_jobFactory(jobFactory), m_printerNameResolver(std::move(printerNameResolver)) {
+LpdSession::LpdSession(IPrinterJobFactory& jobFactory, PrinterNameResolver printerNameResolver, size_t maxControlFileBytes)
+    : m_jobFactory(jobFactory), m_printerNameResolver(std::move(printerNameResolver)),
+      m_maxControlFileBytes(maxControlFileBytes) {
+    if (m_maxControlFileBytes == 0) throw std::invalid_argument("LPD maximum control file bytes must be at least 1");
 }
 
 void LpdSession::Run(ILpdTransport& transport) {
@@ -218,7 +220,8 @@ void LpdSession::handleReceiveJob(const std::string& queueName, ILpdTransport& t
         }
 
         if (commandCode == ReceiveJobCommand::ReceiveControlFile) {
-            if (controlFileReceived || fileCommand->size > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
+            if (controlFileReceived || fileCommand->size > m_maxControlFileBytes ||
+                fileCommand->size > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
                 reject(transport);
                 return;
             }

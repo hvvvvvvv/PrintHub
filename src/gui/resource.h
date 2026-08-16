@@ -40,3 +40,5 @@
 #define IDC_ADD_LPD_QUEUE           1037
 #define IDC_REMOVE_LPD_QUEUE        1038
 #define IDC_LPD_QUEUE_LIST          1039
+#define IDC_MAX_PENDING_CLIENTS     1040
+#define IDC_LPD_MAX_CONTROL_BYTES   1041

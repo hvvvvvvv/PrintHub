@@ -6,9 +6,12 @@ public:
         CWinApp::InitInstance();
         INITCOMMONCONTROLSEX commonControls{ sizeof(commonControls), ICC_LISTVIEW_CLASSES };
         InitCommonControlsEx(&commonControls);
-        CManagerDialog dialog;
-        m_pMainWnd = &dialog;
-        dialog.DoModal();
+        {
+            CManagerDialog dialog;
+            m_pMainWnd = &dialog;
+            dialog.DoModal();
+            m_pMainWnd = nullptr;
+        }
         return FALSE;
     }
 };

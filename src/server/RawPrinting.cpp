@@ -20,8 +20,8 @@ private:
 
 } // namespace
 
-RawPrinting::RawPrinting(std::string printerName, uint16_t port, int minThreads)
-    : PrintServer(port, minThreads), m_printerName(std::move(printerName)) {
+RawPrinting::RawPrinting(std::string printerName, uint16_t port, int minThreads, int maxPendingClients)
+    : PrintServer(port, minThreads, maxPendingClients), m_printerName(std::move(printerName)) {
     if (m_printerName.empty()) {
         throw std::invalid_argument("Printer name cannot be empty");
     }

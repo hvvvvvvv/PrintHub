@@ -10,12 +10,15 @@ constexpr int kInetPtonSuccess = 1;
 
 } // namespace
 
-PrintServer::PrintServer(uint16_t port, int minThreads) {
+PrintServer::PrintServer(uint16_t port, int minThreads, int maxPendingClients) : m_taskQueue(static_cast<size_t>(maxPendingClients)) {
     m_listenAddr = {};
     m_listenAddr.sin_family = AF_INET;
     m_listenAddr.sin_addr.s_addr = INADDR_ANY;
     SetListenPort(port);
     SetMinThreads(minThreads);
+    if (maxPendingClients < 1) {
+        throw std::invalid_argument("Maximum pending clients must be at least 1");
+    }
     m_shutdown = true;
 }
 
@@ -85,6 +88,7 @@ void PrintServer::Start() {
     }
 
     m_workerThreads.clear();
+    m_stopping = false;
     for (int i = 0; i < m_minThreads; ++i) {
         m_workerThreads.emplace_back([this](std::stop_token stopToken) { workerThread(stopToken); });
     }
@@ -99,7 +103,14 @@ void PrintServer::Stop() {
         return;
     }
 
+    m_stopping = true;
     m_listenSocket.reset();
+    m_acceptThread.request_stop();
+    {
+        std::lock_guard<std::mutex> queueLock(m_queueMutex);
+        m_taskQueue.Clear();
+    }
+    m_condition.notify_all();
     {
         std::lock_guard<std::mutex> activeLock(m_activeSocketsMutex);
         for (const auto socket : m_activeSockets) {
@@ -107,7 +118,6 @@ void PrintServer::Stop() {
         }
     }
 
-    m_acceptThread.request_stop();
     if (m_acceptThread.joinable()) {
         m_acceptThread.join();
     }
@@ -121,11 +131,6 @@ void PrintServer::Stop() {
     }
     m_workerThreads.clear();
 
-    {
-        std::lock_guard<std::mutex> queueLock(m_queueMutex);
-        std::queue<PendingClient> emptyQueue;
-        m_taskQueue.swap(emptyQueue);
-    }
     m_shutdown = true;
 }
 
@@ -142,9 +147,24 @@ void PrintServer::listenLoop(std::stop_token stopToken, SOCKET listenSocket) {
             spdlog::warn("accept failed with WSA error {}", error);
             continue;
         }
+        bool accepted = false;
         {
             std::lock_guard<std::mutex> queueLock(m_queueMutex);
-            m_taskQueue.push(PendingClient{ std::move(clientSocket), clientAddr });
+            if (!m_stopping && m_taskQueue.TryPush(PendingClient{ std::move(clientSocket), clientAddr })) {
+                accepted = true;
+            }
+        }
+        if (!accepted) {
+            ++m_rejectedPendingClients;
+            const auto now = std::chrono::steady_clock::now();
+            if (m_lastQueueRejectionLog.time_since_epoch().count() == 0 ||
+                now - m_lastQueueRejectionLog >= std::chrono::minutes(1)) {
+                spdlog::warn("Rejected {} pending clients on {}:{} because the queue is full or stopping",
+                    m_rejectedPendingClients, GetListenAddr(), GetListenPort());
+                m_rejectedPendingClients = 0;
+                m_lastQueueRejectionLog = now;
+            }
+            continue;
         }
         m_condition.notify_one();
     }
@@ -155,21 +175,23 @@ void PrintServer::workerThread(std::stop_token stopToken) {
         PendingClient pendingClient;
         {
             std::unique_lock<std::mutex> queueLock(m_queueMutex);
-            const auto hasData = m_condition.wait(queueLock, stopToken, [this] { return !m_taskQueue.empty(); });
-            if (!hasData) {
-                continue;
+            const auto hasData = m_condition.wait(queueLock, stopToken, [this] { return m_stopping || !m_taskQueue.Empty(); });
+            if (!hasData || m_stopping || stopToken.stop_requested()) {
+                return;
             }
-            pendingClient = std::move(m_taskQueue.front());
-            m_taskQueue.pop();
+            pendingClient = m_taskQueue.Pop();
         }
 
         const auto clientSocket = pendingClient.socket.get();
         const auto clientAddr = pendingClient.address;
         std::optional<TcpClient> client;
+        bool active = false;
         try {
             {
                 std::lock_guard<std::mutex> activeLock(m_activeSocketsMutex);
+                if (m_stopping || stopToken.stop_requested()) return;
                 m_activeSockets.insert(clientSocket);
+                active = true;
             }
             client.emplace(std::move(pendingClient.socket), clientAddr);
             handleClient(*client);
@@ -181,7 +203,7 @@ void PrintServer::workerThread(std::stop_token stopToken) {
         catch (...) {
             spdlog::warn("Client worker failed with an unknown error");
         }
-        {
+        if (active) {
             std::lock_guard<std::mutex> activeLock(m_activeSocketsMutex);
             m_activeSockets.erase(clientSocket);
         }

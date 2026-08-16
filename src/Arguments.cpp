@@ -15,8 +15,12 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
     m_parser.add_argument(ARGS_LPD_QUEUE).help("LPD queue-to-printer map in queue=printer form").append();
     m_parser.add_argument(ARGS_RAW_SERVER_MIN_THREADS).help("Minimum threads for raw printing server")
         .default_value(DEFAULT_MIN_THREADS).scan<'d', uint16_t>();
+    m_parser.add_argument(ARGS_MAX_PENDING_CLIENTS).help("Maximum pending TCP clients for each listener")
+        .default_value(ServiceConfiguration::kDefaultMaxPendingClients).scan<'d', uint16_t>();
     m_parser.add_argument(ARGS_LPD_PORT).help("Port for LPD server")
         .default_value(DEFAULT_LPD_PORT).scan<'d', uint16_t>();
+    m_parser.add_argument(ARGS_LPD_MAX_CONTROL_FILE_BYTES).help("Maximum bytes accepted for an LPD control file")
+        .default_value(ServiceConfiguration::kDefaultLpdMaxControlFileBytes).scan<'d', uint64_t>();
     m_parser.add_argument(ARGS_LPD_MIN_THREADS).help("Minimum threads for LPD server")
         .default_value(DEFAULT_MIN_THREADS).scan<'d', uint16_t>();
     m_parser.add_argument(ARGS_LISTEN_ADDRESS).help("IPv4 address used by all RAW and LPD listeners")
@@ -33,7 +37,9 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
     RawServersConfig = std::nullopt;
     LpdQueuesConfig = std::nullopt;
     RawServerMinThreads = DEFAULT_MIN_THREADS;
+    MaxPendingClients = ServiceConfiguration::kDefaultMaxPendingClients;
     LpdPort = DEFAULT_LPD_PORT;
+    LpdMaxControlFileBytes = ServiceConfiguration::kDefaultLpdMaxControlFileBytes;
     ListenAddress = DEFAULT_LISTEN_ADDRESS;
     SnmpReject = DEFAULT_SNMP_REJECT;
     LpdMinThreads = DEFAULT_MIN_THREADS;
@@ -77,7 +83,9 @@ void Arguments::Parse(int argc, char** argv) {
         LpdQueuesConfig.reset();
     }
     RawServerMinThreads = configuration.rawServerMinThreads;
+    MaxPendingClients = configuration.maxPendingClients;
     LpdPort = configuration.lpdPort;
+    LpdMaxControlFileBytes = configuration.lpdMaxControlFileBytes;
     ListenAddress = configuration.listenAddress;
     SnmpReject = configuration.snmpReject;
     LpdMinThreads = configuration.lpdMinThreads;
@@ -99,7 +107,9 @@ std::vector<std::string> Arguments::GetRawArguments(std::optional<std::set<std::
         configuration.lpdQueues = *LpdQueuesConfig;
     }
     configuration.rawServerMinThreads = RawServerMinThreads;
+    configuration.maxPendingClients = MaxPendingClients;
     configuration.lpdPort = LpdPort;
+    configuration.lpdMaxControlFileBytes = LpdMaxControlFileBytes;
     configuration.listenAddress = ListenAddress;
     configuration.snmpReject = SnmpReject;
     configuration.lpdMinThreads = LpdMinThreads;
@@ -147,8 +157,8 @@ std::string Arguments::Dump() const {
             result.append(fmt::format("  - {}={}\n", mapping.queueName, mapping.printerName));
         }
     }
-    result.append(fmt::format("RawServerMinThreads: {}\nLpdPort: {}\nListenAddress: {}\nSnmpReject: {}\nLpdMinThreads: {}\nLogLevel: {}\n",
-        RawServerMinThreads, LpdPort, ListenAddress, SnmpReject, LpdMinThreads, logLevelToString(LogLevel)));
+    result.append(fmt::format("RawServerMinThreads: {}\nMaxPendingClients: {}\nLpdPort: {}\nLpdMaxControlFileBytes: {}\nListenAddress: {}\nSnmpReject: {}\nLpdMinThreads: {}\nLogLevel: {}\n",
+        RawServerMinThreads, MaxPendingClients, LpdPort, LpdMaxControlFileBytes, ListenAddress, SnmpReject, LpdMinThreads, logLevelToString(LogLevel)));
     result.append(ServiceOperation.has_value() ? fmt::format("ServiceOperation: {}\n", *ServiceOperation) : "ServiceOperation: not set\n");
     result.append(fmt::format("Silent: {}", Silent));
     return result;
