@@ -1,5 +1,6 @@
 #include <PpmMib.h>
 
+#include <AsciiText.h>
 #include <Windows.h>
 
 #include <algorithm>
@@ -72,15 +73,6 @@ struct OrdinalIgnoreCaseLess {
     }
 };
 
-std::string asciiLower(std::string value) {
-    for (auto& character : value) {
-        if (character >= 'A' && character <= 'Z') {
-            character = static_cast<char>(character + ('a' - 'A'));
-        }
-    }
-    return value;
-}
-
 // The input has already passed strict UTF-8 validation. If the byte limit
 // lands inside a code point, omit the entire code point.
 std::string truncateUtf8(std::string_view text, size_t limit) {
@@ -98,7 +90,6 @@ struct Port {
 
 struct Printer {
     std::wstring ordinalName;
-    std::string displayName;
     std::vector<Port> ports;
 };
 
@@ -183,10 +174,6 @@ std::string portName(std::string_view printerCaption, const Port& port) {
 
 } // namespace
 
-snmp::Mib PpmMib::Build(const ServiceConfiguration& configuration) {
-    return BuildDirectory(configuration).baseMib;
-}
-
 PpmDirectory PpmMib::BuildDirectory(const ServiceConfiguration& configuration) {
     auto ppmConfiguration = configuration;
     ppmConfiguration.snmpPpm = true;
@@ -195,13 +182,12 @@ PpmDirectory PpmMib::BuildDirectory(const ServiceConfiguration& configuration) {
     std::map<std::wstring, Printer, OrdinalIgnoreCaseLess> printers;
     const auto addPort = [&](const std::string& name, Port port) {
         auto ordinalName = decodePrinterName(name);
-        auto [position, inserted] = printers.try_emplace(ordinalName, Printer{ ordinalName, encodeUtf8(ordinalName), {} });
+        auto [position, inserted] = printers.try_emplace(ordinalName, Printer{ ordinalName, {} });
         auto& printer = position->second;
         // A group may appear under differently cased spellings. Select its
         // display spelling deterministically, independently of argument order.
         if (!inserted && compareOrdinal(ordinalName, printer.ordinalName, false) < 0) {
             printer.ordinalName = std::move(ordinalName);
-            printer.displayName = encodeUtf8(printer.ordinalName);
         }
         printer.ports.push_back(std::move(port));
     };
@@ -238,12 +224,12 @@ PpmDirectory PpmMib::BuildDirectory(const ServiceConfiguration& configuration) {
     uint32_t printerIndex = 0;
     for (auto& [key, printer] : printers) {
         ++printerIndex;
-        directory.printers.push_back({ printerIndex, printer.ordinalName, captions[printerIndex - 1] });
+        directory.printers.push_back({ printerIndex, printer.ordinalName });
         if (printer.ports.size() > INT_MAX) throw std::invalid_argument("Too many ports for a PPM printer");
         std::sort(printer.ports.begin(), printer.ports.end(), [](const Port& left, const Port& right) {
             if (left.raw != right.raw) return left.raw;
             if (left.raw) return left.targetPort < right.targetPort;
-            return asciiLower(left.queue) < asciiLower(right.queue);
+            return ascii::LowerCopy(left.queue) < ascii::LowerCopy(right.queue);
         });
         const auto printerValue = [&](uint32_t column, snmp::Value value) {
             put(mib, objectOid(kPrinterGroup, column), { printerIndex }, std::move(value));

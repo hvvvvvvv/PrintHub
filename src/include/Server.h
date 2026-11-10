@@ -25,17 +25,16 @@ class PrintServer {
 		virtual ~PrintServer();
 		void Start();
 		void Stop();
-		void SetListenPort(uint16_t port);
 		void SetListenAddr(const std::string& addr);
-		void SetMinThreads(int minThreads);
 		std::string GetListenAddr() const;
 		uint16_t GetListenPort() const;
-		int GetMinThreads() const;
 	protected:
 		PrintServer(uint16_t port, int minThreads = 1, int maxPendingClients = ServiceConfiguration::kDefaultMaxPendingClients);
 		
 		virtual void handleClient(TcpClient& client) = 0;
 	private:
+		void SetListenPort(uint16_t port);
+		void SetMinThreads(int minThreads);
 		void stopLocked();
 		void listenLoop(std::stop_token stopToken, SOCKET listenSocket);
 		void workerThread(std::stop_token stopToken);

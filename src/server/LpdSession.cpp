@@ -318,9 +318,7 @@ void LpdSession::handleReceiveJob(const std::string& queueName, ILpdTransport& t
                 receivedDataFiles.insert(fileCommand->name);
                 spdlog::warn("LPD byte-count compatibility fallback for '{}' from {}:{}: advertised {}, received {} before EOF",
                     fileCommand->name, endpoint.address, endpoint.port, fileCommand->size, receivedBytes);
-                if (commitIfComplete()) {
-                    return;
-                }
+                commitIfComplete();
                 return;
             }
 

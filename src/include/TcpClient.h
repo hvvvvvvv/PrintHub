@@ -30,6 +30,7 @@ class TcpClient {
         std::string leftoverBuffer;
         std::string m_addr;
         uint16_t m_port;
+        int Receive(char* buffer, int size);
         void setSocketTimeout(DWORD timeout);
 };
 

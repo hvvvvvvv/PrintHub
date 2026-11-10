@@ -8,7 +8,6 @@
 struct PpmPrinter {
     uint32_t index;
     std::wstring queueName;
-    std::string displayName;
 };
 
 struct PpmDirectory {
@@ -20,7 +19,6 @@ struct PpmDirectory {
 // print listeners. No host printer enumeration or persisted indices are used.
 class PpmMib {
 public:
-    static snmp::Mib Build(const ServiceConfiguration& configuration);
     static PpmDirectory BuildDirectory(const ServiceConfiguration& configuration);
     static snmp::Mib WithMetadata(const PpmDirectory& directory,
         std::span<const ppm::StatusSample> statuses,

@@ -10,9 +10,6 @@
 #include <filesystem>
 #include <algorithm>
 #include <memory>
-#include <sstream>
-
-constexpr wchar_t CManagerDialog::kServiceName[];
 
 struct CManagerDialog::WorkItem {
     Action action;
@@ -197,12 +194,10 @@ void CManagerDialog::OnAddRaw() {
     try {
         std::vector<std::string> candidateArguments{ "--raw-server", ToNarrow(printer.GetString()) + ":" + ToNarrow(portText.GetString()) };
         const auto candidate = ServiceConfiguration::Parse(candidateArguments);
-        HANDLE printerHandle = nullptr;
-        if (!OpenPrinterW(const_cast<LPWSTR>(printer.GetString()), &printerHandle, nullptr)) {
+        if (!IsPrinterAvailable(printer.GetString())) {
             AfxMessageBox(L"找不到指定的本机或连接打印机。请从下拉列表选择，或确认名称正确。", MB_ICONWARNING);
             return;
         }
-        ClosePrinter(printerHandle);
         const auto& entry = candidate.rawServers.front();
         for (const auto& existing : m_rawServers) {
             if (existing.port == entry.port) {
@@ -246,12 +241,10 @@ void CManagerDialog::OnAddLpdQueue() {
             AfxMessageBox(L"LPD 队列名不能重复（不区分大小写）。", MB_ICONWARNING);
             return;
         }
-        HANDLE printerHandle = nullptr;
-        if (!OpenPrinterW(const_cast<LPWSTR>(printer.GetString()), &printerHandle, nullptr)) {
+        if (!IsPrinterAvailable(printer.GetString())) {
             AfxMessageBox(L"找不到指定的本机或连接打印机。请从下拉列表选择，或确认名称正确。", MB_ICONWARNING);
             return;
         }
-        ClosePrinter(printerHandle);
         const auto& entry = candidate.lpdQueues.front();
         m_lpdQueues.push_back(entry);
         const int row = m_lpdQueueList.InsertItem(m_lpdQueueList.GetItemCount(), ToWide(entry.queueName).c_str());
@@ -305,6 +298,13 @@ void CManagerDialog::OnConfigurationChanged() {
     UpdatePreview();
 }
 
+bool CManagerDialog::IsPrinterAvailable(const std::wstring& printerName) {
+    HANDLE handle = nullptr;
+    if (!OpenPrinterW(const_cast<LPWSTR>(printerName.c_str()), &handle, nullptr)) return false;
+    ClosePrinter(handle);
+    return true;
+}
+
 std::vector<std::wstring> CManagerDialog::EnumeratePrinters(DWORD& error) {
     error = ERROR_SUCCESS;
     DWORD bytes = 0;
@@ -344,28 +344,45 @@ void CManagerDialog::PopulatePrinters(const std::vector<std::wstring>& printers)
     }
 }
 
+bool CManagerDialog::ParseServiceImagePath(const std::wstring& imagePath, std::wstring& executable,
+    ServiceConfiguration& configuration) {
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(imagePath.c_str(), &argc);
+    if (!argv || argc < 1) {
+        if (argv) LocalFree(argv);
+        return false;
+    }
+
+    // Keep argument errors distinct from an unreadable command line for the UI.
+    try {
+        std::vector<std::string> arguments;
+        for (int index = 1; index < argc; ++index) arguments.push_back(ToNarrow(argv[index]));
+        configuration = ServiceConfiguration::Parse(arguments);
+        executable = argv[0];
+    } catch (...) {
+        LocalFree(argv);
+        throw;
+    }
+    LocalFree(argv);
+    return true;
+}
+
 CManagerDialog::StartupLoadResult CManagerDialog::LoadStartupData() {
     StartupLoadResult result;
     result.printers = EnumeratePrinters(result.printerError);
     result.snapshot = QueryService();
     if (result.snapshot.error != ERROR_SUCCESS || !result.snapshot.installed) return result;
 
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(result.snapshot.imagePath.c_str(), &argc);
-    if (!argv || argc < 1) {
-        result.unknownConfiguration = true;
-        if (argv) LocalFree(argv);
-        return result;
-    }
     try {
-        std::vector<std::string> arguments;
-        for (int index = 1; index < argc; ++index) arguments.push_back(ToNarrow(argv[index]));
-        result.configuration = ServiceConfiguration::Parse(arguments);
-        result.executable = argv[0];
+        ServiceConfiguration configuration;
+        if (ParseServiceImagePath(result.snapshot.imagePath, result.executable, configuration)) {
+            result.configuration = std::move(configuration);
+        } else {
+            result.unknownConfiguration = true;
+        }
     } catch (const std::exception&) {
         result.unknownConfiguration = true;
     }
-    LocalFree(argv);
     return result;
 }
 
@@ -480,25 +497,21 @@ void CManagerDialog::RefreshServiceStatus(bool loadConfiguration) {
     m_status.SetWindowTextW(snapshot.running ? L"服务状态：已安装，正在运行" : L"服务状态：已安装，已停止");
     if (!loadConfiguration) return;
 
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(snapshot.imagePath.c_str(), &argc);
-    if (!argv || argc < 1) {
-        m_unknownExistingConfiguration = true;
-        m_status.SetWindowTextW(L"服务状态：已安装；无法读取现有配置，更新前需确认覆盖");
-        if (argv) LocalFree(argv);
-        return;
-    }
     try {
-        std::vector<std::string> arguments;
-        for (int index = 1; index < argc; ++index) arguments.push_back(ToNarrow(argv[index]));
-        LoadConfiguration(ServiceConfiguration::Parse(arguments));
-        m_servicePath.SetWindowTextW(argv[0]);
+        ServiceConfiguration configuration;
+        std::wstring executable;
+        if (!ParseServiceImagePath(snapshot.imagePath, executable, configuration)) {
+            m_unknownExistingConfiguration = true;
+            m_status.SetWindowTextW(L"服务状态：已安装；无法读取现有配置，更新前需确认覆盖");
+            return;
+        }
+        LoadConfiguration(configuration);
+        m_servicePath.SetWindowTextW(executable.c_str());
         m_unknownExistingConfiguration = false;
     } catch (const std::exception&) {
         m_unknownExistingConfiguration = true;
         m_status.SetWindowTextW(L"服务状态：已安装；配置包含未识别参数，更新前需确认覆盖");
     }
-    LocalFree(argv);
 }
 
 void CManagerDialog::LoadConfiguration(const ServiceConfiguration& configuration) {
@@ -653,24 +666,18 @@ void CManagerDialog::StartAction(Action action) {
     if (action == Action::InstallOrUpdate) {
         const auto configuration = ReadConfiguration(true);
         if (!configuration) return;
-        for (const auto& entry : configuration->rawServers) {
-            const auto printer = ToWide(entry.printerName);
-            HANDLE handle = nullptr;
-            if (!OpenPrinterW(const_cast<LPWSTR>(printer.c_str()), &handle, nullptr)) {
-                AfxMessageBox((CString(L"RAW 打印机不可用：") + printer.c_str()), MB_ICONWARNING);
-                return;
+        const auto validatePrinters = [](const auto& entries, const wchar_t* unavailablePrefix) {
+            for (const auto& entry : entries) {
+                const auto printer = ToWide(entry.printerName);
+                if (!IsPrinterAvailable(printer)) {
+                    AfxMessageBox((CString(unavailablePrefix) + printer.c_str()), MB_ICONWARNING);
+                    return false;
+                }
             }
-            ClosePrinter(handle);
-        }
-        for (const auto& entry : configuration->lpdQueues) {
-            const auto printer = ToWide(entry.printerName);
-            HANDLE handle = nullptr;
-            if (!OpenPrinterW(const_cast<LPWSTR>(printer.c_str()), &handle, nullptr)) {
-                AfxMessageBox((CString(L"LPD 映射打印机不可用：") + printer.c_str()), MB_ICONWARNING);
-                return;
-            }
-            ClosePrinter(handle);
-        }
+            return true;
+        };
+        if (!validatePrinters(configuration->rawServers, L"RAW 打印机不可用：")
+            || !validatePrinters(configuration->lpdQueues, L"LPD 映射打印机不可用：")) return;
         if (m_unknownExistingConfiguration && AfxMessageBox(L"现有服务配置包含无法识别的参数。继续将完全覆盖它，是否继续？", MB_ICONWARNING | MB_YESNO) != IDYES) return;
         if (work.snapshot.installed && AfxMessageBox(L"更新配置会停止、卸载、重新安装并启动服务。是否继续？", MB_ICONWARNING | MB_YESNO) != IDYES) return;
         work.configuration = *configuration;

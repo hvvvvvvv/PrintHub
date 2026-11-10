@@ -51,16 +51,11 @@ void SnmpServer::Start() {
         throw std::system_error(WSAGetLastError(), std::system_category(),
             "Failed to bind SNMP server to " + m_listenAddress + ":" + std::to_string(m_port));
     }
-    int addressSize = sizeof(address);
-    if (getsockname(socket.get(), reinterpret_cast<sockaddr*>(&address), &addressSize) == SOCKET_ERROR) {
-        throw std::system_error(WSAGetLastError(), std::system_category(), "Failed to read SNMP listen port");
-    }
 
     const auto nativeSocket = socket.get();
     // Stop keeps the native handle alive until the receiver exits.
     m_failureCode.store(0);
     std::jthread receiver([this, nativeSocket](std::stop_token token) { receiveLoop(token, nativeSocket); });
-    m_boundPort = ntohs(address.sin_port);
     m_socket = std::move(socket);
     m_receiveThread = std::move(receiver);
 }
@@ -71,7 +66,6 @@ void SnmpServer::Stop() {
     m_receiveThread.request_stop();
     if (m_receiveThread.joinable()) m_receiveThread.join();
     m_socket.reset();
-    m_boundPort = 0;
 }
 
 void SnmpServer::receiveLoop(std::stop_token token, SOCKET socket) {

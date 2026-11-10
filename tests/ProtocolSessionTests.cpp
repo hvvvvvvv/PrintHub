@@ -100,7 +100,7 @@ public:
 
     void ReadLine(std::string& line) override {
         const auto newline = m_input.find('\n', m_position);
-        if (newline == std::string::npos || isDisconnectedBefore(newline + 1)) {
+        if (newline == std::string::npos) {
             throw LpdTransportDisconnected(Endpoint());
         }
         line.assign(m_input.data() + m_position, newline - m_position);
@@ -111,13 +111,10 @@ public:
         ++readExactlyCalls;
         size_t remaining = size;
         while (remaining != 0) {
-            if (m_position >= m_input.size() || isDisconnectedBefore(m_position + 1)) {
+            if (m_position >= m_input.size()) {
                 throw LpdTransportDisconnected(Endpoint());
             }
-            auto available = (std::min)(remaining, (std::min)(m_chunkSize, m_input.size() - m_position));
-            if (m_disconnectAt.has_value()) {
-                available = (std::min)(available, *m_disconnectAt - m_position);
-            }
+            const auto available = (std::min)(remaining, (std::min)(m_chunkSize, m_input.size() - m_position));
             if (available == 0) {
                 throw LpdTransportDisconnected(Endpoint());
             }
@@ -135,19 +132,13 @@ public:
         }
     }
 
-    void DisconnectAtEnd() { m_disconnectAt = m_input.size(); }
     std::string responses;
     size_t readExactlyCalls = 0;
 
 private:
-    bool isDisconnectedBefore(size_t position) const {
-        return m_disconnectAt.has_value() && position > *m_disconnectAt;
-    }
-
     std::string m_input;
     size_t m_position = 0;
     size_t m_chunkSize;
-    std::optional<size_t> m_disconnectAt;
 };
 
 struct FakeJobState {
@@ -269,7 +260,6 @@ void testWindowsPlaceholderAndInvalidTerminator() {
     auto placeholder = receiveJobPrefix() + fileCommand(kReceiveControlFile, control.size(), "cfA") + control + '\0'
         + fileCommand(kReceiveDataFile, 99999, "dfA") + data;
     FakeLpdTransport placeholderTransport(std::move(placeholder), 3);
-    placeholderTransport.DisconnectAtEnd();
     FakeFactory placeholderFactory;
     LpdSession placeholderSession(placeholderFactory, [](const std::string&) { return std::optional<std::string>("Printer"); });
     placeholderSession.Run(placeholderTransport);

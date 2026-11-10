@@ -16,9 +16,6 @@ cmake_install.cmake
 CTestTestfile.cmake
 Testing/
 
-# Generated project configuration
-/src/include/config.h
-
 # Native build and diagnostic artifacts
 *.exe
 *.dll
@@ -27,3 +24,6 @@ Testing/
 *.ilk
 *.obj
 *.log
+
+# Local agent instructions
+/AGENTS.md

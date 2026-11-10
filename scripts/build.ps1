@@ -85,6 +85,68 @@ function Get-FirstExistingPath {
     return $null
 }
 
+function Get-ConfigurePresetBinaryDir {
+    param(
+        [object[]]$ConfigurePresets,
+        [string]$PresetName,
+        [string[]]$InheritanceChain = @()
+    )
+
+    if ($InheritanceChain -ccontains $PresetName) {
+        Stop-Build "CMake configure preset 继承存在循环：$($InheritanceChain -join ' -> ') -> $PresetName"
+    }
+
+    $configurePreset = $ConfigurePresets | Where-Object {
+        $null -ne $_ -and $null -ne $_.PSObject.Properties['name'] -and $_.name -ceq $PresetName
+    } | Select-Object -First 1
+    if ($null -eq $configurePreset) {
+        Stop-Build "CMakePresets.json 中未找到 configure preset：$PresetName"
+    }
+
+    $binaryDirProperty = $configurePreset.PSObject.Properties['binaryDir']
+    if ($null -ne $binaryDirProperty -and -not [string]::IsNullOrWhiteSpace([string]$binaryDirProperty.Value)) {
+        return [string]$binaryDirProperty.Value
+    }
+
+    $inheritsProperty = $configurePreset.PSObject.Properties['inherits']
+    if ($null -ne $inheritsProperty) {
+        # CMake gives earlier parents precedence when multiple presets are inherited.
+        foreach ($parentName in @($inheritsProperty.Value)) {
+            $binaryDir = Get-ConfigurePresetBinaryDir -ConfigurePresets $ConfigurePresets `
+                -PresetName $parentName -InheritanceChain ($InheritanceChain + $PresetName)
+            if (-not [string]::IsNullOrWhiteSpace($binaryDir)) {
+                return $binaryDir
+            }
+        }
+    }
+
+    return $null
+}
+
+function Get-PresetBuildDirectory {
+    param(
+        [string]$RepositoryRoot,
+        [string]$PresetName
+    )
+
+    $presetsPath = Join-Path $RepositoryRoot 'CMakePresets.json'
+    $presets = Get-Content -LiteralPath $presetsPath -Encoding UTF8 -Raw | ConvertFrom-Json
+    if ($null -eq $presets -or $null -eq $presets.PSObject.Properties['configurePresets']) {
+        Stop-Build 'CMakePresets.json 中未找到 configurePresets。'
+    }
+
+    $buildDirectory = Get-ConfigurePresetBinaryDir -ConfigurePresets @($presets.configurePresets) -PresetName $PresetName
+    if ([string]::IsNullOrWhiteSpace($buildDirectory)) {
+        Stop-Build "CMake configure preset 未定义或继承 binaryDir：$PresetName"
+    }
+
+    $buildDirectory = $buildDirectory.Replace('${sourceDir}', $RepositoryRoot).Replace('${presetName}', $PresetName)
+    if (-not [IO.Path]::IsPathRooted($buildDirectory)) {
+        $buildDirectory = Join-Path $RepositoryRoot $buildDirectory
+    }
+    return [IO.Path]::GetFullPath($buildDirectory)
+}
+
 function Get-VisualStudioInstallation {
     $vswhereCommand = Get-Command 'vswhere.exe' -CommandType Application -ErrorAction SilentlyContinue
     $vswherePath = $null
@@ -254,7 +316,7 @@ try {
 
     $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
     $preset = '{0}-{1}' -f $Architecture, $Configuration.ToLowerInvariant()
-    $buildDirectory = Join-Path $repositoryRoot (Join-Path 'out\build' $preset)
+    $buildDirectory = Get-PresetBuildDirectory -RepositoryRoot $repositoryRoot -PresetName $preset
     $serviceBinaryPath = Join-Path $buildDirectory 'src\PrintHub.exe'
     $managerBinaryPath = Join-Path $buildDirectory 'src\gui\PrintHubManager.exe'
     $managerPdbPath = Join-Path $buildDirectory 'symbols\PrintHubManager.pdb'

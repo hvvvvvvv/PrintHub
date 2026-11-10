@@ -1,17 +1,30 @@
 #include<utility.h>
 #include<fmt/format.h>
+#include <ServiceConfiguration.hpp>
 
 #include <algorithm>
 
 namespace utility {
 	namespace {
 		constexpr DWORD kNoServiceArguments = 0;
-		constexpr char kStringTerminator = '\0';
 		constexpr DWORD kServiceStateTimeoutMs = 60000;
 		constexpr DWORD kMinimumPollIntervalMs = 250;
 		constexpr DWORD kMaximumPollIntervalMs = 1000;
 		constexpr DWORD kRecoveryDelayMs = 10000;
 		constexpr DWORD kRecoveryResetSeconds = 24 * 60 * 60;
+
+		std::wstring toWide(const std::string& value) {
+			if (value.empty()) return {};
+			const int size = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, value.data(),
+				static_cast<int>(value.size()), nullptr, 0);
+			if (size <= 0) {
+				throw std::runtime_error("Failed to convert service configuration text to Unicode");
+			}
+			std::wstring result(static_cast<size_t>(size), L'\0');
+			MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, value.data(),
+				static_cast<int>(value.size()), result.data(), size);
+			return result;
+		}
 
 		void waitForServiceState(SC_HANDLE service, DWORD targetState, const char* action) {
 			const auto deadline = GetTickCount64() + kServiceStateTimeoutMs;
@@ -159,29 +172,30 @@ namespace utility {
 		if (args.binaryPath.empty()) {
 			throw std::invalid_argument("Binary path cannot be empty");
 		}
-		std::vector<CHAR> deps;
-		std::string binaryPath = fmt::format("\"{}\"", args.binaryPath);
-		for(const auto& arg : args.arguments) {
-			if (!arg.empty()) {
-				binaryPath.append(" \"").append(arg).append("\"");
-			}
-		}	
-		if(!args.dependencies.empty()) {
-			for (const auto& dep : args.dependencies) {
-				if (!dep.empty()) {
-					deps.insert(deps.end(), dep.begin(), dep.end());
-					deps.push_back(kStringTerminator);
-				}
-			}	
+		// Convert to Unicode before quoting: CP_ACP multi-byte sequences may end
+		// in 0x5C and must not be mistaken for command-line escape backslashes.
+		std::vector<std::wstring> commandLineArguments{ toWide(args.binaryPath) };
+		for (const auto& argument : args.arguments) {
+			commandLineArguments.push_back(toWide(argument));
 		}
-		deps.push_back(kStringTerminator);
-		auto serviceHandle = CreateServiceA(
+		const auto binaryPath = BuildWindowsCommandLine(commandLineArguments);
+		std::vector<wchar_t> deps;
+		for (const auto& dep : args.dependencies) {
+			if (dep.empty()) continue;
+			const auto wideDep = toWide(dep);
+			deps.insert(deps.end(), wideDep.begin(), wideDep.end());
+			deps.push_back(L'\0');
+		}
+		deps.push_back(L'\0');
+		const auto serviceName = toWide(m_serviceName);
+		const auto displayName = toWide(args.displayName.value_or(m_serviceName));
+		auto serviceHandle = CreateServiceW(
 			m_serviceHandle,
-			m_serviceName.c_str(),
-			args.displayName.value_or(m_serviceName).c_str(),
+			serviceName.c_str(),
+			displayName.c_str(),
 			SERVICE_ALL_ACCESS,
 			SERVICE_WIN32_OWN_PROCESS,
-			args.startAutomatic ? SERVICE_AUTO_START : SERVICE_DEMAND_START,
+			SERVICE_AUTO_START,
 			SERVICE_ERROR_NORMAL,
 			binaryPath.c_str(),
 			nullptr, nullptr, 
@@ -192,13 +206,6 @@ namespace utility {
 		}
 		try {
 			configureFailureRecovery(serviceHandle);
-			if (args.description.has_value()) {
-				SERVICE_DESCRIPTIONA desc{};
-				desc.lpDescription = const_cast<LPSTR>(args.description->c_str());
-				if (!ChangeServiceConfig2A(serviceHandle, SERVICE_CONFIG_DESCRIPTION, &desc)) {
-					throw std::runtime_error(fmt::format("Failed to set service description for {}. Error code: {}", m_serviceName, GetLastError()));
-				}
-			}
 		}
 		catch (...) {
 			DeleteService(serviceHandle);

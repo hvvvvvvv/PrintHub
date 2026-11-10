@@ -20,7 +20,6 @@ public:
         return *this;
     }
     SOCKET get() const noexcept { return m_socket; }
-    SOCKET release() noexcept { return std::exchange(m_socket, INVALID_SOCKET); }
     void reset(SOCKET socket = INVALID_SOCKET) noexcept {
         if (m_socket != INVALID_SOCKET) {
             closesocket(m_socket);

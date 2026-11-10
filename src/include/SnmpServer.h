@@ -26,7 +26,6 @@ public:
 
     void Start();
     void Stop();
-    uint16_t GetListenPort() const noexcept { return m_boundPort.load(); }
     int GetFailureCode() const noexcept { return m_failureCode.load(); }
 
 private:
@@ -36,7 +35,6 @@ private:
     RequestHandler m_handler;
     FailureHandler m_onFailure;
     uint16_t m_port;
-    std::atomic<uint16_t> m_boundPort = 0;
     std::atomic<int> m_failureCode = 0;
     UniqueSocket m_socket;
     std::jthread m_receiveThread;

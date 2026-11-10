@@ -71,26 +71,6 @@ MetadataQueryResult ReadStatusInformation(const Reader& read) {
     return Failure(ERROR_INSUFFICIENT_BUFFER);
 }
 
-MetadataQueryResult ReadPrinterStatus(const std::wstring& queue,
-    std::stop_token stop, const MetadataDiagnostic& diagnostic) {
-    if (stop.stop_requested()) return Failure(ERROR_CANCELLED);
-    PrinterHandle printer{nullptr, diagnostic};
-    PRINTER_DEFAULTSW defaults{};
-    defaults.DesiredAccess = PRINTER_ACCESS_USE;
-    diagnostic("status/OpenPrinterW: starting");
-    if (!OpenPrinterW(const_cast<wchar_t*>(queue.c_str()), &printer.value, &defaults)) return Failure(GetLastError());
-    return ReadStatusInformation([&printer, stop, &diagnostic](std::uint8_t* buffer, std::uint32_t size,
-        std::uint32_t& needed, std::uint32_t& error) {
-        if (stop.stop_requested()) { error = ERROR_CANCELLED; return false; }
-        diagnostic("status/GetPrinterW(level=6): starting");
-        DWORD nativeNeeded = 0;
-        const bool result = GetPrinterW(printer.value, 6, buffer, size, &nativeNeeded) != FALSE;
-        error = result ? 0 : GetLastError();
-        needed = nativeNeeded;
-        return result;
-    });
-}
-
 class ComApartment {
 public:
     explicit ComApartment(const MetadataDiagnostic& diagnostic)
@@ -254,24 +234,34 @@ MetadataQueryResult QueryBidiIdentity(const std::wstring& queue,
     return {QueryOutcome::Success, 0, std::move(identity), 0};
 }
 
-MetadataQueryResult ReadPrinterIdentity(const std::wstring& queue,
+} // namespace
+
+MetadataQueryResult QueryPrinterStatus(const std::wstring& queue,
+    std::stop_token stop, const MetadataDiagnostic& diagnostic) {
+    if (stop.stop_requested()) return Failure(ERROR_CANCELLED);
+    PrinterHandle printer{nullptr, diagnostic};
+    PRINTER_DEFAULTSW defaults{};
+    defaults.DesiredAccess = PRINTER_ACCESS_USE;
+    diagnostic("status/OpenPrinterW: starting");
+    if (!OpenPrinterW(const_cast<wchar_t*>(queue.c_str()), &printer.value, &defaults)) return Failure(GetLastError());
+    return ReadStatusInformation([&printer, stop, &diagnostic](std::uint8_t* buffer, std::uint32_t size,
+        std::uint32_t& needed, std::uint32_t& error) {
+        if (stop.stop_requested()) { error = ERROR_CANCELLED; return false; }
+        diagnostic("status/GetPrinterW(level=6): starting");
+        DWORD nativeNeeded = 0;
+        const bool result = GetPrinterW(printer.value, 6, buffer, size, &nativeNeeded) != FALSE;
+        error = result ? 0 : GetLastError();
+        needed = nativeNeeded;
+        return result;
+    });
+}
+
+MetadataQueryResult QueryPrinterIdentity(const std::wstring& queue,
     std::stop_token stop, const MetadataDiagnostic& diagnostic) {
     if (stop.stop_requested()) return Failure(ERROR_CANCELLED);
     const auto bidi = QueryBidiIdentity(queue, stop, diagnostic);
     if (stop.stop_requested()) return Failure(ERROR_CANCELLED);
     return QueryUsbIdentityFallback(queue, bidi, stop, diagnostic);
-}
-
-} // namespace
-
-MetadataQueryResult QueryPrinterStatus(const std::wstring& queue,
-    std::stop_token stop, const MetadataDiagnostic& diagnostic) {
-    return ReadPrinterStatus(queue, stop, diagnostic);
-}
-
-MetadataQueryResult QueryPrinterIdentity(const std::wstring& queue,
-    std::stop_token stop, const MetadataDiagnostic& diagnostic) {
-    return ReadPrinterIdentity(queue, stop, diagnostic);
 }
 
 } // namespace ppm

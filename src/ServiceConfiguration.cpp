@@ -1,8 +1,8 @@
 #include <ServiceConfiguration.hpp>
+#include <AsciiText.h>
 
 #include <algorithm>
 #include <charconv>
-#include <cctype>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -49,30 +49,43 @@ size_t parseByteCount(const std::string& text, const char* name) {
     return static_cast<size_t>(value);
 }
 
-std::string lowercase(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
-        return static_cast<char>(std::tolower(character));
-    });
-    return value;
-}
-
-bool equalsAsciiCaseInsensitive(std::string_view left, std::string_view right) {
-    if (left.size() != right.size()) return false;
-    for (size_t index = 0; index < left.size(); ++index) {
-        const auto lower = [](unsigned char character) {
-            return character >= 'A' && character <= 'Z' ? static_cast<char>(character + ('a' - 'A'))
-                                                        : static_cast<char>(character);
-        };
-        if (lower(static_cast<unsigned char>(left[index])) != lower(static_cast<unsigned char>(right[index]))) return false;
-    }
-    return true;
-}
-
 const std::string& requireValue(const std::vector<std::string>& arguments, size_t& position, const char* name) {
     if (++position >= arguments.size()) {
         throw std::invalid_argument(std::string("Missing value for ") + name);
     }
     return arguments[position];
+}
+
+std::wstring quoteWindowsCommandLineArgument(const std::wstring& value) {
+    if (value.empty()) return L"\"\"";
+    if (value.find_first_of(L" \t\"") == std::wstring::npos) return value;
+    std::wstring result = L"\"";
+    size_t slashCount = 0;
+    for (const auto character : value) {
+        if (character == L'\\') {
+            ++slashCount;
+        } else if (character == L'\"') {
+            result.append(slashCount * 2 + 1, L'\\');
+            result.push_back(character);
+            slashCount = 0;
+        } else {
+            result.append(slashCount, L'\\');
+            result.push_back(character);
+            slashCount = 0;
+        }
+    }
+    result.append(slashCount * 2, L'\\');
+    result.push_back(L'\"');
+    return result;
+}
+
+std::wstring buildWindowsCommandLine(const std::vector<std::wstring>& arguments) {
+    std::wstring result;
+    for (const auto& argument : arguments) {
+        if (!result.empty()) result.push_back(L' ');
+        result += quoteWindowsCommandLineArgument(argument);
+    }
+    return result;
 }
 
 } // namespace
@@ -227,7 +240,7 @@ void ServiceConfiguration::Validate(bool requireRunnableListener) const {
             throw std::invalid_argument("--snmp-ppm requires LPD queue names of 1 to 32 printable ASCII characters without whitespace");
         }
         for (size_t earlier = 0; earlier < index; ++earlier) {
-            if (equalsAsciiCaseInsensitive(mapping.queueName, lpdQueues[earlier].queueName)) {
+            if (ascii::EqualsIgnoreCase(mapping.queueName, lpdQueues[earlier].queueName)) {
                 throw std::invalid_argument("LPD queue names must be unique (case-insensitive)");
             }
         }
@@ -236,7 +249,7 @@ void ServiceConfiguration::Validate(bool requireRunnableListener) const {
 
 std::optional<std::string> ResolveLpdQueuePrinter(const std::vector<LpdQueueMapping>& mappings, std::string_view queueName) {
     for (const auto& mapping : mappings) {
-        if (equalsAsciiCaseInsensitive(mapping.queueName, queueName)) return mapping.printerName;
+        if (ascii::EqualsIgnoreCase(mapping.queueName, queueName)) return mapping.printerName;
     }
     return std::nullopt;
 }
@@ -255,7 +268,7 @@ std::string ServiceConfiguration::LogLevelToString(ServiceLogLevel value) {
 }
 
 ServiceLogLevel ServiceConfiguration::ParseLogLevel(const std::string& text) {
-    const auto value = lowercase(text);
+    const auto value = ascii::LowerCopy(text);
     if (value == "trace" || value == "0") return ServiceLogLevel::Trace;
     if (value == "debug" || value == "1") return ServiceLogLevel::Debug;
     if (value == "info" || value == "2") return ServiceLogLevel::Info;
@@ -286,33 +299,9 @@ bool ServiceConfiguration::IsIpv4Address(const std::string& value) {
 }
 
 std::wstring QuoteWindowsCommandLineArgument(const std::wstring& value) {
-    if (value.empty()) return L"\"\"";
-    if (value.find_first_of(L" \t\"") == std::wstring::npos) return value;
-    std::wstring result = L"\"";
-    size_t slashCount = 0;
-    for (const auto character : value) {
-        if (character == L'\\') {
-            ++slashCount;
-        } else if (character == L'\"') {
-            result.append(slashCount * 2 + 1, L'\\');
-            result.push_back(character);
-            slashCount = 0;
-        } else {
-            result.append(slashCount, L'\\');
-            result.push_back(character);
-            slashCount = 0;
-        }
-    }
-    result.append(slashCount * 2, L'\\');
-    result.push_back(L'\"');
-    return result;
+    return quoteWindowsCommandLineArgument(value);
 }
 
 std::wstring BuildWindowsCommandLine(const std::vector<std::wstring>& arguments) {
-    std::wstring result;
-    for (const auto& argument : arguments) {
-        if (!result.empty()) result.push_back(L' ');
-        result += QuoteWindowsCommandLineArgument(argument);
-    }
-    return result;
+    return buildWindowsCommandLine(arguments);
 }

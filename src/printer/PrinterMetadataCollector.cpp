@@ -121,10 +121,6 @@ struct PrinterMetadataCollector::State {
                     (*next)[printer] = {result.outcome, result.flags, result.statusObservedAt};
                     due[printer] = completed + kStatusInterval;
                 } else {
-                    if (result.outcome == QueryOutcome::Success && !ValidateDeviceId(result.deviceId)) {
-                        result.outcome = QueryOutcome::Failed;
-                        result.errorCode = ERROR_INVALID_DATA;
-                    }
                     (*next)[printer] = {result.outcome, result.outcome == QueryOutcome::Success
                         ? std::move(result.deviceId) : std::string{}};
                     due[printer] = result.outcome == QueryOutcome::Success || result.outcome == QueryOutcome::Unsupported

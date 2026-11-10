@@ -62,7 +62,10 @@ private:
     static UINT __cdecl RunOperationThread(LPVOID parameter);
     static UINT __cdecl RunStartupLoadThread(LPVOID parameter);
     static ServiceSnapshot QueryService();
+    static bool IsPrinterAvailable(const std::wstring& printerName);
     static std::vector<std::wstring> EnumeratePrinters(DWORD& error);
+    static bool ParseServiceImagePath(const std::wstring& imagePath, std::wstring& executable,
+        ServiceConfiguration& configuration);
     static StartupLoadResult LoadStartupData();
     static bool WaitForServiceDeletion();
     static WorkResult RunAction(const WorkItem& work);

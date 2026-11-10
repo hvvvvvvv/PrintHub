@@ -312,7 +312,7 @@ std::optional<std::string> DecodeUsbPrinterIdentity(std::span<const std::uint8_t
     for (const bool inclusive : {true, false}) {
         if ((inclusive && declared < 2) || (!inclusive && declared == 0)) continue;
         const auto end = inclusive ? declared : declared + 2;
-        if (end > bytes.size() || end < 2 ||
+        if (end > bytes.size() ||
             !std::all_of(bytes.begin() + end, bytes.end(), [](auto byte) { return byte == 0; })) continue;
         auto payload = bytes.subspan(2, end - 2);
         if (!payload.empty() && payload.back() == 0) payload = payload.first(payload.size() - 1);

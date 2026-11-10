@@ -36,7 +36,6 @@ enum class ServiceConfigurationArgumentFormat {
 // The complete set of service-hosting options.  Keeping this model independent
 // from the console parser lets the MFC manager and PrintHub use one wire format.
 struct ServiceConfiguration {
-    static constexpr uint16_t kDefaultRawPort = 9100;
     static constexpr uint16_t kDefaultLpdPort = 515;
     static constexpr int kDefaultMinThreads = 1;
     static constexpr int kDefaultMaxPendingClients = 256;

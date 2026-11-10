@@ -2,7 +2,6 @@
 #include <config.h>
 
 #include <algorithm>
-#include <limits>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
@@ -62,7 +61,7 @@ void TcpClient::Read(size_t size, BufferCallback callback) {
     }
 
     while (totalBytes < size) {
-        const int bytesRead = recv(m_socket.get(), buffer.data(), static_cast<int>(recvLen), 0);
+        const int bytesRead = Receive(buffer.data(), static_cast<int>(recvLen));
         if (bytesRead > 0) {
             totalBytes += static_cast<size_t>(bytesRead);
             if (callback) {
@@ -74,15 +73,6 @@ void TcpClient::Read(size_t size, BufferCallback callback) {
         if (bytesRead == 0) {
             throw TcpClientDisconnected(m_addr, m_port);
         }
-
-        const auto error = WSAGetLastError();
-        if (error == WSAETIMEDOUT) {
-            throw TcpClientTimeout(m_addr, m_port);
-        }
-        if (error == WSAENOTCONN || error == WSAECONNRESET) {
-            throw TcpClientDisconnected(m_addr, m_port);
-        }
-        throw TcpClientReceiveError(m_addr, m_port, error);
     }
 }
 
@@ -97,7 +87,7 @@ void TcpClient::ReadAll(BufferCallback callback) {
     }
 
     while (true) {
-        const int bytesReceived = recv(m_socket.get(), buffer.data(), static_cast<int>(buffer.size()), 0);
+        const int bytesReceived = Receive(buffer.data(), static_cast<int>(buffer.size()));
         if (bytesReceived > 0) {
             if (callback) {
                 callback(buffer.data(), static_cast<size_t>(bytesReceived));
@@ -107,15 +97,6 @@ void TcpClient::ReadAll(BufferCallback callback) {
         if (bytesReceived == 0) {
             return;
         }
-
-        const auto error = WSAGetLastError();
-        if (error == WSAETIMEDOUT) {
-            throw TcpClientTimeout(m_addr, m_port);
-        }
-        if (error == WSAENOTCONN || error == WSAECONNRESET) {
-            throw TcpClientDisconnected(m_addr, m_port);
-        }
-        throw TcpClientReceiveError(m_addr, m_port, error);
     }
 }
 
@@ -132,7 +113,7 @@ void TcpClient::ReadLine(std::string& data) {
     leftoverBuffer.clear();
 
     while (true) {
-        const int bytesReceived = recv(m_socket.get(), buffer.data(), static_cast<int>(buffer.size()), 0);
+        const int bytesReceived = Receive(buffer.data(), static_cast<int>(buffer.size()));
         if (bytesReceived > 0) {
             const auto receivedSize = static_cast<size_t>(bytesReceived);
             const auto pos = buffer.find('\n', 0);
@@ -156,15 +137,6 @@ void TcpClient::ReadLine(std::string& data) {
         if (bytesReceived == 0) {
             throw TcpClientDisconnected(m_addr, m_port);
         }
-
-        const auto error = WSAGetLastError();
-        if (error == WSAETIMEDOUT) {
-            throw TcpClientTimeout(m_addr, m_port);
-        }
-        if (error == WSAENOTCONN || error == WSAECONNRESET) {
-            throw TcpClientDisconnected(m_addr, m_port);
-        }
-        throw TcpClientReceiveError(m_addr, m_port, error);
     }
 }
 
@@ -174,6 +146,22 @@ std::string TcpClient::Addr() const {
 
 uint16_t TcpClient::Port() const {
     return m_port;
+}
+
+int TcpClient::Receive(char* buffer, int size) {
+    const int bytesReceived = recv(m_socket.get(), buffer, size, 0);
+    if (bytesReceived >= 0) {
+        return bytesReceived;
+    }
+
+    const auto error = WSAGetLastError();
+    if (error == WSAETIMEDOUT) {
+        throw TcpClientTimeout(m_addr, m_port);
+    }
+    if (error == WSAENOTCONN || error == WSAECONNRESET) {
+        throw TcpClientDisconnected(m_addr, m_port);
+    }
+    throw TcpClientReceiveError(m_addr, m_port, error);
 }
 
 void TcpClient::setSocketTimeout(DWORD timeout) {

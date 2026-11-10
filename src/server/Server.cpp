@@ -55,10 +55,6 @@ uint16_t PrintServer::GetListenPort() const {
     return ntohs(m_listenAddr.sin_port);
 }
 
-int PrintServer::GetMinThreads() const {
-    return m_minThreads;
-}
-
 void PrintServer::Start() {
     std::lock_guard<std::mutex> lock(m_statusMutex);
     if (!m_shutdown) {

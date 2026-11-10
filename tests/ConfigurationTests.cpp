@@ -90,6 +90,11 @@ void testWindowsQuoting() {
     require(commandLine.find(L"\\\\\\\"") != std::wstring::npos, "Embedded quote was not escaped");
 }
 
+void testWindowsQuotingUnicode() {
+    const auto commandLine = BuildWindowsCommandLine({ L"C:\\Program Files\\PrintHub.exe", L"--lpd-queue", L"Q=Office \u4E57" });
+    require(commandLine.find(L"\"Q=Office \u4E57\"") != std::wstring::npos, "Unicode argument was not quoted");
+}
+
 void testManagerCommands() {
     ServiceConfiguration configuration;
     configuration.rawServers.push_back({ "Office Printer", 9100 });
@@ -130,6 +135,7 @@ int main() {
         testValidation();
         testExplicitSerialization();
         testWindowsQuoting();
+        testWindowsQuotingUnicode();
         testManagerCommands();
         testLpdQueueResolution();
         testBoundedPendingQueue();

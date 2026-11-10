@@ -2,13 +2,9 @@
 
 #include <config.h>
 #include <ServiceConfiguration.hpp>
-#include <utility.h>
 
-#include <cctype>
 #include <fmt/format.h>
 #include <iostream>
-#include <map>
-#include <stdexcept>
 
 Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT_VERSION)) {
     m_parser.add_argument(ARGS_RAW_SERVERS).help("List of raw server printer name port maps").append();
@@ -30,11 +26,11 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
     m_parser.add_argument(ARGS_SNMP_PPM).help("Publish printers, RAW/LPR ports, automatic device identity and queue status through SNMP on UDP 161 (exclusive with --snmp-reject)")
         .default_value(DEFAULT_SNMP_PPM).implicit_value(true);
     m_parser.add_argument(ARGS_LOG_LEVEL).help("Set log level, choices(trace | debug | info | warn | error | critical)")
-        .default_value(DEFAULT_LOG_LEVEL).action(parseLogLevel);
+        .default_value("info");
     m_parser.add_argument(ARGS_SERVICE).help(fmt::format("Service management, choices({} | {} | {} | {} | {})",
         ARGS_SERVICE_INSTALL, ARGS_SERVICE_UNINSTALL, ARGS_SERVICE_START, ARGS_SERVICE_STOP, ARGS_SERVICE_RESTART))
         .choices(ARGS_SERVICE_INSTALL, ARGS_SERVICE_UNINSTALL, ARGS_SERVICE_START, ARGS_SERVICE_STOP, ARGS_SERVICE_RESTART);
-    m_parser.add_argument(ARGS_SILENT).default_value(DEFAULT_SILENT).implicit_value(true).hidden();
+    m_parser.add_argument(ARGS_SILENT).default_value(false).implicit_value(true).hidden();
 
     RawServersConfig = std::nullopt;
     LpdQueuesConfig = std::nullopt;
@@ -46,9 +42,8 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
     SnmpReject = DEFAULT_SNMP_REJECT;
     SnmpPpm = DEFAULT_SNMP_PPM;
     LpdMinThreads = DEFAULT_MIN_THREADS;
-    LogLevel = DEFAULT_LOG_LEVEL;
+    LogLevel = ServiceLogLevel::Info;
     ServiceOperation = std::nullopt;
-    Silent = DEFAULT_SILENT;
 }
 
 void Arguments::Parse(int argc, char** argv) {
@@ -93,14 +88,10 @@ void Arguments::Parse(int argc, char** argv) {
     SnmpReject = configuration.snmpReject;
     SnmpPpm = configuration.snmpPpm;
     LpdMinThreads = configuration.lpdMinThreads;
-    LogLevel = parseLogLevel(ServiceConfiguration::LogLevelToString(configuration.logLevel));
-    Silent = m_parser.get<bool>(ARGS_SILENT);
+    LogLevel = configuration.logLevel;
 }
 
-std::vector<std::string> Arguments::GetRawArguments(std::optional<std::set<std::string>> ignoreItems) const {
-    const auto isIgnored = [&ignoreItems](const std::string& item) {
-        return ignoreItems.has_value() && ignoreItems->contains(item);
-    };
+std::vector<std::string> Arguments::GetRawArguments() const {
     ServiceConfiguration configuration;
     if (RawServersConfig.has_value()) {
         for (const auto& server : *RawServersConfig) {
@@ -118,31 +109,8 @@ std::vector<std::string> Arguments::GetRawArguments(std::optional<std::set<std::
     configuration.snmpReject = SnmpReject;
     configuration.snmpPpm = SnmpPpm;
     configuration.lpdMinThreads = LpdMinThreads;
-    configuration.logLevel = static_cast<ServiceLogLevel>(LogLevel);
-
-    const auto allConfigurationArguments = configuration.ToArguments();
-    std::vector<std::string> result;
-    for (size_t index = 0; index < allConfigurationArguments.size(); ++index) {
-        const auto& argument = allConfigurationArguments[index];
-        if (isIgnored(argument)) {
-            if (index + 1 < allConfigurationArguments.size() && allConfigurationArguments[index + 1].starts_with("--") == false) {
-                ++index;
-            }
-            continue;
-        }
-        result.push_back(argument);
-        if (index + 1 < allConfigurationArguments.size() && allConfigurationArguments[index + 1].starts_with("--") == false) {
-            result.push_back(allConfigurationArguments[++index]);
-        }
-    }
-    if (ServiceOperation.has_value() && !isIgnored(ARGS_SERVICE)) {
-        result.push_back(ARGS_SERVICE);
-        result.push_back(*ServiceOperation);
-    }
-    if (Silent != DEFAULT_SILENT && !isIgnored(ARGS_SILENT)) {
-        result.push_back(ARGS_SILENT);
-    }
-    return result;
+    configuration.logLevel = LogLevel;
+    return configuration.ToArguments();
 }
 
 void Arguments::PrintHelp() const {
@@ -163,75 +131,7 @@ std::string Arguments::Dump() const {
         }
     }
     result.append(fmt::format("RawServerMinThreads: {}\nMaxPendingClients: {}\nLpdPort: {}\nLpdMaxControlFileBytes: {}\nListenAddress: {}\nSnmpReject: {}\nSnmpPpm: {}\nLpdMinThreads: {}\nLogLevel: {}\n",
-        RawServerMinThreads, MaxPendingClients, LpdPort, LpdMaxControlFileBytes, ListenAddress, SnmpReject, SnmpPpm, LpdMinThreads, logLevelToString(LogLevel)));
+        RawServerMinThreads, MaxPendingClients, LpdPort, LpdMaxControlFileBytes, ListenAddress, SnmpReject, SnmpPpm, LpdMinThreads, ServiceConfiguration::LogLevelToString(LogLevel)));
     result.append(ServiceOperation.has_value() ? fmt::format("ServiceOperation: {}\n", *ServiceOperation) : "ServiceOperation: not set\n");
-    result.append(fmt::format("Silent: {}", Silent));
     return result;
-}
-
-spdlog::level::level_enum Arguments::parseLogLevel(const std::string& value) {
-    using spdlog::level::level_enum;
-    static const std::map<std::string, level_enum> mapping{
-        { "trace", level_enum::trace }, { "debug", level_enum::debug }, { "info", level_enum::info },
-        { "warn", level_enum::warn }, { "warning", level_enum::warn }, { "error", level_enum::err },
-        { "critical", level_enum::critical }, { "off", level_enum::off },
-    };
-    std::string normalized;
-    normalized.reserve(value.size());
-    for (const auto character : value) {
-        normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
-    }
-    if (const auto iterator = mapping.find(normalized); iterator != mapping.end()) {
-        return iterator->second;
-    }
-    const auto numericLevel = utility::StringToNumber<int>(normalized);
-    if (!numericLevel.has_value()) {
-        throw std::invalid_argument("Invalid log level: " + value);
-    }
-    if (*numericLevel < static_cast<int>(level_enum::trace)) {
-        return level_enum::trace;
-    }
-    if (*numericLevel > static_cast<int>(level_enum::off)) {
-        return level_enum::off;
-    }
-    return static_cast<level_enum>(*numericLevel);
-}
-
-std::string Arguments::logLevelToString(spdlog::level::level_enum level) {
-    switch (level) {
-    case spdlog::level::trace: return "trace";
-    case spdlog::level::debug: return "debug";
-    case spdlog::level::info: return "info";
-    case spdlog::level::warn: return "warn";
-    case spdlog::level::err: return "error";
-    case spdlog::level::critical: return "critical";
-    case spdlog::level::off: return "off";
-    default: return "unknown";
-    }
-}
-
-void Arguments::parseRawServers(const std::vector<std::string>& rawServers) {
-    RawServersConfig = RawServersConfigType{};
-    for (const auto& rawServer : rawServers) {
-        if (rawServer.empty()) {
-            continue;
-        }
-        const auto separator = rawServer.find(RAW_SERVER_SEPARATOR);
-        const auto printerName = rawServer.substr(0, separator);
-        auto port = DEFAULT_RAW_PORT;
-        if (separator != std::string::npos) {
-            const auto parsedPort = utility::StringToNumber<uint16_t>(rawServer.substr(separator + RAW_SERVER_PORT_OFFSET));
-            if (!parsedPort.has_value() || *parsedPort < MINIMUM_PORT) {
-                throw std::invalid_argument(fmt::format("Invalid port number in raw server definition: {}", rawServer));
-            }
-            port = *parsedPort;
-        }
-        if (printerName.empty()) {
-            throw std::invalid_argument(fmt::format("Printer name cannot be empty in raw server definition: {}", rawServer));
-        }
-        RawServersConfig->emplace_back(printerName, port);
-    }
-    if (RawServersConfig->empty()) {
-        RawServersConfig.reset();
-    }
 }

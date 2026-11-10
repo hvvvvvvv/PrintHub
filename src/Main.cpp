@@ -8,9 +8,7 @@
 #include <spdlog/spdlog.h>
 #include <utility.h>
 #include <vector>
-#include <conio.h>
 #include <cstdlib>
-#include <algorithm>
 #include <functional>
 #include <thread>
 #include <Arguments.hpp>
@@ -31,6 +29,19 @@ constexpr DWORD kInitialServiceCheckpoint = 1;
 constexpr DWORD kServiceStopCheckpointIntervalMs = 5000;
 constexpr DWORD kMetadataDiagnosticPollMs = 1000;
 constexpr auto kMetadataShutdownBudget = std::chrono::milliseconds(500);
+
+spdlog::level::level_enum toSpdlogLevel(ServiceLogLevel level) {
+	switch (level) {
+	case ServiceLogLevel::Trace: return spdlog::level::trace;
+	case ServiceLogLevel::Debug: return spdlog::level::debug;
+	case ServiceLogLevel::Info: return spdlog::level::info;
+	case ServiceLogLevel::Warn: return spdlog::level::warn;
+	case ServiceLogLevel::Error: return spdlog::level::err;
+	case ServiceLogLevel::Critical: return spdlog::level::critical;
+	case ServiceLogLevel::Off: return spdlog::level::off;
+	}
+	throw std::invalid_argument("Unknown log level");
+}
 
 } // namespace
 
@@ -76,7 +87,7 @@ static void serviceActionHandle(const std::string& action) {
 		}
 		utility::ServiceManager::InstallArgs args;
 		args.binaryPath = utility::getExecutablePath().string();
-		args.arguments = g_args->GetRawArguments(std::set<std::string>{Arguments::ARGS_SERVICE});
+		args.arguments = g_args->GetRawArguments();
 		args.dependencies = { "Tcpip"};
 		args.displayName = PROJECT_NAME;
 		serviceManager.InstallSrv(args);
@@ -118,19 +129,10 @@ static std::vector<std::unique_ptr<PrintServer>> createRawServers() {
 		for (const auto& server : *g_args->RawServersConfig) {
 			auto printerName = std::get<0>(server);
 			auto port = std::get<1>(server);
-			if (printerName.empty() || port == 0) {
-				throw std::invalid_argument(fmt::format("Invalid raw server configuration: {}:{}", printerName, port));
-			}
 			servers.push_back(std::make_unique<RawPrinting>(printerName, port, g_args->RawServerMinThreads, g_args->MaxPendingClients));
 		}
 	}
 	if (g_args->LpdQueuesConfig.has_value()) {
-		if (g_args->LpdPort == 0) {
-			throw std::invalid_argument("LPD port cannot be zero");
-		}
-		if (g_args->LpdMinThreads < 1) {
-			throw std::invalid_argument("LPD minimum threads must be at least 1");
-		}
 		servers.push_back(std::make_unique<LPD>(g_args->LpdPort, *g_args->LpdQueuesConfig, g_args->LpdMinThreads,
 			g_args->LpdMaxControlFileBytes, g_args->MaxPendingClients));
 	}
@@ -190,10 +192,10 @@ static DWORD WINAPI svcCtrlHandler(DWORD dwControl, DWORD, LPVOID, LPVOID) {
 			signalShutdown();
 			spdlog::info("Service stopping...");
 			return NO_ERROR;
-		} break;
+		}
 		case SERVICE_CONTROL_INTERROGATE: {
 			return NO_ERROR;
-		} break;
+		}
 		default: {
 			return ERROR_CALL_NOT_IMPLEMENTED;
 		}
@@ -267,10 +269,6 @@ static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 	try {
 		WinsockRuntime winsockRuntime;
 		auto servers = createRawServers();
-		if (servers.empty()) {
-			spdlog::warn("No servers configured, exiting.");
-			return {EXIT_FAILURE};
-		}
 		PrintListenerCleanup printCleanup(servers);
 		std::optional<SnmpServer> snmpServer;
 		bool started = false;
@@ -399,7 +397,7 @@ int main(int argc, char* argv[]) {
 		CloseHandle(g_shutdownEvent);
 		g_shutdownEvent = nullptr;
 	};
-	setupLogger(g_args->LogLevel);
+	setupLogger(toSpdlogLevel(g_args->LogLevel));
 	spdlog::debug("Parsed arguments: \n{}", g_args->Dump());
 	SERVICE_TABLE_ENTRYA DispatchTable[] = {
 		{ const_cast<LPSTR>(PROJECT_NAME), svcMain},

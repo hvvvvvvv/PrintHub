@@ -1,4 +1,5 @@
 #include <SnmpProtocol.h>
+#include <SnmpBer.h>
 
 #include <algorithm>
 #include <limits>
@@ -7,6 +8,11 @@
 
 namespace snmp {
 namespace {
+
+using ber::EncodedSize;
+using ber::EncodeTlv;
+using ber::Reader;
+using ber::Tlv;
 
 constexpr std::uint8_t kInteger = 0x02;
 constexpr std::uint8_t kOctets = 0x04;
@@ -21,61 +27,6 @@ constexpr std::uint8_t kNoSuchObject = 0x80;
 constexpr std::uint8_t kNoSuchInstance = 0x81;
 constexpr std::uint8_t kEndOfMibView = 0x82;
 constexpr std::size_t kMaxOidArcs = 128;
-
-struct Tlv {
-    std::uint8_t tag{};
-    std::string_view value;
-    std::string_view raw;
-};
-
-// SNMP has a fixed, shallow grammar. Each reader views its parent's contents;
-// BER nesting is never traversed recursively and no wire length allocates memory.
-class Reader {
-public:
-    explicit Reader(std::string_view input) : input_(input) {}
-
-    bool Read(Tlv& tlv) {
-        const auto start = offset_;
-        if (input_.size() - offset_ < 2) {
-            return false;
-        }
-        tlv.tag = Byte(input_[offset_++]);
-        // Only the single-octet tags used by SNMP are supported.
-        if ((tlv.tag & 0x1FU) == 0x1FU) {
-            return false;
-        }
-        const auto first = Byte(input_[offset_++]);
-        std::size_t length = first;
-        if ((first & 0x80U) != 0) {
-            const auto count = static_cast<std::size_t>(first & 0x7FU);
-            if (count == 0 || count > sizeof(std::size_t)
-                || count > input_.size() - offset_) {
-                return false;
-            }
-            length = 0;
-            for (std::size_t index = 0; index < count; ++index) {
-                if (length > (std::numeric_limits<std::size_t>::max)() / 256U) {
-                    return false;
-                }
-                length = length * 256U + Byte(input_[offset_++]);
-            }
-        }
-        if (length > input_.size() - offset_) {
-            return false;
-        }
-        tlv.value = input_.substr(offset_, length);
-        offset_ += length;
-        tlv.raw = input_.substr(start, offset_ - start);
-        return true;
-    }
-
-    bool Done() const { return offset_ == input_.size(); }
-
-private:
-    static std::uint8_t Byte(char value) { return static_cast<std::uint8_t>(value); }
-    std::string_view input_;
-    std::size_t offset_{};
-};
 
 bool DecodeInteger(const Tlv& tlv, std::int32_t& value) {
     if (tlv.tag != kInteger || tlv.value.empty() || tlv.value.size() > 4) {
@@ -226,39 +177,6 @@ std::string EncodeOid(const Oid& oid) {
     return output;
 }
 
-std::size_t EncodedSize(std::size_t payloadSize) {
-    if (payloadSize < 128) {
-        return payloadSize + 2;
-    }
-    std::size_t lengthBytes = 0;
-    for (auto length = payloadSize; length != 0; length >>= 8U) {
-        ++lengthBytes;
-    }
-    return payloadSize + 2 + lengthBytes;
-}
-
-std::string TlvBytes(std::uint8_t tag, std::string_view value) {
-    std::string result;
-    result.reserve(EncodedSize(value.size()));
-    result.push_back(static_cast<char>(tag));
-    if (value.size() < 128) {
-        result.push_back(static_cast<char>(value.size()));
-    }
-    else {
-        std::uint8_t bytes[sizeof(std::size_t)]{};
-        std::size_t count = 0;
-        for (auto length = value.size(); length != 0; length >>= 8U) {
-            bytes[count++] = static_cast<std::uint8_t>(length & 0xFFU);
-        }
-        result.push_back(static_cast<char>(0x80U | count));
-        while (count != 0) {
-            result.push_back(static_cast<char>(bytes[--count]));
-        }
-    }
-    result.append(value);
-    return result;
-}
-
 struct Request {
     std::int32_t version{};
     std::int32_t id{};
@@ -322,8 +240,8 @@ bool ParseRequest(std::string_view wire, Request& request) {
 class ResponseEncoder {
 public:
     explicit ResponseEncoder(const Request& request)
-        : version_(TlvBytes(kInteger, Value::Integer(request.version).payload)),
-          id_(TlvBytes(kInteger, Value::Integer(request.id).payload)) {}
+        : version_(EncodeTlv(kInteger, Value::Integer(request.version).payload)),
+          id_(EncodeTlv(kInteger, Value::Integer(request.id).payload)) {}
 
     bool Fits(std::size_t bindingsSize, std::int32_t error = 0, std::int32_t index = 0) const {
         if (bindingsSize > kMaxMessageBytes) {
@@ -339,9 +257,9 @@ public:
         if (!Fits(bindings.size(), error, index)) {
             return std::nullopt;
         }
-        auto pdu = id_ + TlvBytes(kInteger, Value::Integer(error).payload)
-            + TlvBytes(kInteger, Value::Integer(index).payload) + TlvBytes(kSequence, bindings);
-        return TlvBytes(kSequence, version_ + TlvBytes(kOctets, "public") + TlvBytes(kResponse, pdu));
+        auto pdu = id_ + EncodeTlv(kInteger, Value::Integer(error).payload)
+            + EncodeTlv(kInteger, Value::Integer(index).payload) + EncodeTlv(kSequence, bindings);
+        return EncodeTlv(kSequence, version_ + EncodeTlv(kOctets, "public") + EncodeTlv(kResponse, pdu));
     }
 
 private:
@@ -358,7 +276,7 @@ std::optional<std::string> EncodeBinding(const Oid& oid, const Value& value) {
     if (EncodedSize(size) > kMaxMessageBytes) {
         return std::nullopt;
     }
-    return TlvBytes(kSequence, TlvBytes(kOid, encodedOid) + TlvBytes(value.tag, value.payload));
+    return EncodeTlv(kSequence, EncodeTlv(kOid, encodedOid) + EncodeTlv(value.tag, value.payload));
 }
 
 bool KnownObject(const Oid& oid, const Mib& mib) {
