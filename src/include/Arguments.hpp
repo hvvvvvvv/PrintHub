@@ -25,6 +25,7 @@ public:
     static constexpr auto ARGS_LPD_MIN_THREADS = "--lpd-min-threads";
     static constexpr auto ARGS_LISTEN_ADDRESS = "--listen-address";
     static constexpr auto ARGS_SNMP_REJECT = "--snmp-reject";
+    static constexpr auto ARGS_SNMP_PPM = "--snmp-ppm";
     static constexpr auto ARGS_LOG_LEVEL = "--log-level";
     static constexpr auto ARGS_SERVICE = "--service";
     static constexpr auto ARGS_SILENT = "--silent";
@@ -39,6 +40,7 @@ public:
     static constexpr uint16_t DEFAULT_RAW_PORT = 9100;
     static constexpr auto DEFAULT_LOG_LEVEL = spdlog::level::info;
     static constexpr auto DEFAULT_SNMP_REJECT = false;
+    static constexpr auto DEFAULT_SNMP_PPM = false;
     static constexpr auto DEFAULT_SILENT = false;
     static constexpr auto DEFAULT_LISTEN_ADDRESS = "0.0.0.0";
     static constexpr char RAW_SERVER_SEPARATOR = ':';
@@ -62,6 +64,7 @@ public:
     size_t LpdMaxControlFileBytes;
     std::string ListenAddress;
     bool SnmpReject;
+    bool SnmpPpm;
     int LpdMinThreads;
     spdlog::level::level_enum LogLevel;
     std::optional<std::string> ServiceOperation;

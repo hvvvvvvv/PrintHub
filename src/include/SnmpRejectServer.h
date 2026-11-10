@@ -1,15 +1,10 @@
 #pragma once
 
-#include <SocketHandle.h>
-
-#include <cstdint>
-#include <mutex>
-#include <string>
-#include <thread>
+#include <SnmpServer.h>
 
 class SnmpRejectServer {
 public:
-    static constexpr uint16_t PORT = 161;
+    static constexpr uint16_t PORT = SnmpServer::PORT;
 
     explicit SnmpRejectServer(std::string listenAddress);
     ~SnmpRejectServer();
@@ -21,10 +16,5 @@ public:
     void Stop();
 
 private:
-    void receiveLoop(std::stop_token stopToken, SOCKET socket);
-
-    std::string m_listenAddress;
-    UniqueSocket m_socket;
-    std::jthread m_receiveThread;
-    std::mutex m_statusMutex;
+    SnmpServer m_server;
 };

@@ -9,12 +9,16 @@
 #include <utility.h>
 #include <vector>
 #include <conio.h>
+#include <cstdlib>
 #include <algorithm>
 #include <functional>
 #include <thread>
 #include <Arguments.hpp>
 #include <NetworkRuntime.h>
-#include <SnmpRejectServer.h>
+#include <SnmpRejectSession.h>
+#include <SnmpServer.h>
+#include <PpmMib.h>
+#include <PrinterMetadataCollector.h>
 
 namespace {
 
@@ -25,6 +29,8 @@ constexpr auto kLogFlushInterval = std::chrono::seconds(3);
 constexpr DWORD kServiceStatusWaitHintMs = 60000;
 constexpr DWORD kInitialServiceCheckpoint = 1;
 constexpr DWORD kServiceStopCheckpointIntervalMs = 5000;
+constexpr DWORD kMetadataDiagnosticPollMs = 1000;
+constexpr auto kMetadataShutdownBudget = std::chrono::milliseconds(500);
 
 } // namespace
 
@@ -33,17 +39,7 @@ HANDLE g_shutdownEvent = nullptr;
 std::atomic<int> g_servExitCode = EXIT_SUCCESS;
 SERVICE_STATUS_HANDLE g_serviceStatusHandle = nullptr;
 std::atomic<DWORD> g_serviceCheckpoint = kInitialServiceCheckpoint;
-const std::unique_ptr<const Arguments> g_args = []() {
-	auto args = std::make_unique<Arguments>();
-	try {
-		args->Parse(__argc, __argv);
-	} catch (const std::exception& e) {
-		spdlog::error("Failed to parse arguments: {}", e.what());
-		args->PrintHelp();
-		exit(EXIT_FAILURE);
-	}
-	return args;
-}();
+std::unique_ptr<const Arguments> g_args;
 
 static void signalShutdown() {
 	g_shutdown.store(true);
@@ -141,6 +137,20 @@ static std::vector<std::unique_ptr<PrintServer>> createRawServers() {
 	return servers;
 }
 
+static PpmDirectory createPpmDirectory() {
+	ServiceConfiguration configuration;
+	configuration.snmpPpm = true;
+	configuration.listenAddress = g_args->ListenAddress;
+	configuration.lpdPort = g_args->LpdPort;
+	if (g_args->RawServersConfig.has_value()) {
+		for (const auto& server : *g_args->RawServersConfig) {
+			configuration.rawServers.push_back({ std::get<0>(server), std::get<1>(server) });
+		}
+	}
+	if (g_args->LpdQueuesConfig.has_value()) configuration.lpdQueues = *g_args->LpdQueuesConfig;
+	return PpmMib::BuildDirectory(configuration);
+}
+
 static BOOL WINAPI consoleHandler(DWORD ctrlType) {
 	switch (ctrlType) {
 		case CTRL_C_EVENT:
@@ -199,11 +209,17 @@ public:
             spdlog::warn("Could not create service stop progress event: {}", GetLastError());
             return;
         }
-        m_thread = std::jthread([this](std::stop_token) {
-            while (WaitForSingleObject(m_doneEvent, kServiceStopCheckpointIntervalMs) == WAIT_TIMEOUT) {
-                reportServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
-            }
-        });
+        try {
+            m_thread = std::jthread([this](std::stop_token) {
+                while (WaitForSingleObject(m_doneEvent, kServiceStopCheckpointIntervalMs) == WAIT_TIMEOUT) {
+                    reportServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
+                }
+            });
+        } catch (const std::exception& error) {
+            CloseHandle(m_doneEvent);
+            m_doneEvent = nullptr;
+            spdlog::warn("Could not start service stop progress reporter: {}", error.what());
+        }
     }
 
     ~ServiceStopProgressReporter() {
@@ -222,52 +238,127 @@ private:
     std::jthread m_thread;
 };
 
-static int mainRun(const std::function<void()>& onStarted = {}) {
+struct RunResult {
+	int code = EXIT_SUCCESS;
+	bool terminateWithoutDllDetach = false;
+};
+
+class PrintListenerCleanup {
+public:
+	explicit PrintListenerCleanup(const std::vector<std::unique_ptr<PrintServer>>& servers) : m_servers(servers) {}
+	~PrintListenerCleanup() { Stop(); }
+	void Stop() {
+		if (m_stopped) return;
+		for (const auto& server : m_servers) server->Stop();
+		m_stopped = true;
+	}
+private:
+	const std::vector<std::unique_ptr<PrintServer>>& m_servers;
+	bool m_stopped = false;
+};
+
+static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 	spdlog::default_logger()->info("Starting {} version {}", PROJECT_NAME, PROJECT_VERSION);
 	spdlog::info("Build date: {}", __DATE__);
 	spdlog::info("Build time: {}", __TIME__);
 
+	RunResult result;
+	std::shared_ptr<ppm::PrinterMetadataCollector> metadataCollector;
 	try {
 		WinsockRuntime winsockRuntime;
 		auto servers = createRawServers();
 		if (servers.empty()) {
 			spdlog::warn("No servers configured, exiting.");
-			return 1;
+			return {EXIT_FAILURE};
 		}
-		for (auto& server : servers) {
-			server->SetListenAddr(g_args->ListenAddress);
-			server->Start();
-			spdlog::info("Server started on {}:{}", server->GetListenAddr(), server->GetListenPort());
-		}
-		std::optional<SnmpRejectServer> snmpRejectServer;
-		if (g_args->SnmpReject) {
-			snmpRejectServer.emplace(g_args->ListenAddress);
-			snmpRejectServer->Start();
-			spdlog::info("SNMP reject server started on {}:{}", g_args->ListenAddress, SnmpRejectServer::PORT);
-		}
-		if (onStarted) onStarted();
-
-		while (!g_shutdown.load()) {
-			if (WaitForSingleObject(g_shutdownEvent, INFINITE) != WAIT_OBJECT_0) {
-				spdlog::error("Failed while waiting for shutdown event: {}", GetLastError());
-				return 1;
+		PrintListenerCleanup printCleanup(servers);
+		std::optional<SnmpServer> snmpServer;
+		bool started = false;
+		try {
+			for (auto& server : servers) {
+				server->SetListenAddr(g_args->ListenAddress);
+				server->Start();
+				spdlog::info("Server started on {}:{}", server->GetListenAddr(), server->GetListenPort());
 			}
+			if (g_args->SnmpPpm) {
+				auto directory = std::make_shared<const PpmDirectory>(createPpmDirectory());
+				std::vector<std::wstring> queueNames;
+				for (const auto& printer : directory->printers) queueNames.push_back(printer.queueName);
+				metadataCollector = std::make_shared<ppm::PrinterMetadataCollector>(std::move(queueNames));
+				snmpServer.emplace(g_args->ListenAddress,
+					[directory, metadataCollector](std::string_view request) {
+						const auto statuses = metadataCollector->GetStatuses();
+						const auto identities = metadataCollector->GetIdentities();
+						const auto now = ppm::Clock::now();
+						const auto mib = PpmMib::WithMetadata(*directory, *statuses, *identities, now);
+						return snmp::Respond(request, mib);
+					},
+					SnmpServer::PORT, [](int) { signalShutdown(); });
+			} else if (g_args->SnmpReject) {
+				snmpServer.emplace(g_args->ListenAddress, SnmpRejectSession::Handle,
+					SnmpServer::PORT, [](int) { signalShutdown(); });
+			}
+			if (snmpServer) {
+				snmpServer->Start();
+				spdlog::info("SNMP {} server started on {}:{}", g_args->SnmpPpm ? "PPM" : "reject",
+					g_args->ListenAddress, SnmpServer::PORT);
+			}
+			if (!g_shutdown.load()) {
+				if (onStarted) onStarted();
+				started = true;
+				if (metadataCollector) {
+					spdlog::info("PPM discovery does not enable Windows SNMP status polling; check existing client port settings separately");
+					metadataCollector->Start();
+				}
+			}
+			while (!g_shutdown.load()) {
+				const auto wait = WaitForSingleObject(g_shutdownEvent, metadataCollector ? kMetadataDiagnosticPollMs : INFINITE);
+				if (wait == WAIT_OBJECT_0) break;
+				if (wait != WAIT_TIMEOUT) {
+					spdlog::error("Failed while waiting for shutdown event: {}", GetLastError());
+					result.code = EXIT_FAILURE;
+					break;
+				}
+				if (metadataCollector) metadataCollector->LogDiagnostics();
+			}
+		} catch (const std::exception& error) {
+			spdlog::error("Error: {}", error.what());
+			result.code = EXIT_FAILURE;
+		} catch (...) {
+			spdlog::error("Unexpected error in PrintHub service");
+			result.code = EXIT_FAILURE;
 		}
-		ServiceStopProgressReporter stopProgress(g_serviceStatusHandle != nullptr);
-		for (auto& server : servers) {
-			server->Stop();
-			spdlog::info("server stopped on {}:{}", server->GetListenAddr(), server->GetListenPort());
+
+		if (metadataCollector) metadataCollector->RequestStop();
+		ServiceStopProgressReporter stopProgress(started && g_serviceStatusHandle != nullptr);
+		if (snmpServer) {
+			snmpServer->Stop();
+			if (snmpServer->GetFailureCode() != 0) result.code = EXIT_FAILURE;
+			spdlog::info("SNMP server stopped on {}:{}", g_args->ListenAddress, SnmpServer::PORT);
 		}
-		if (snmpRejectServer.has_value()) {
-			snmpRejectServer->Stop();
-			spdlog::info("SNMP reject server stopped on {}:{}", g_args->ListenAddress, SnmpRejectServer::PORT);
-		}
+		printCleanup.Stop();
 	}
 	catch (const std::exception& e) {
 		spdlog::error("Error: {}", e.what());
-		return 1;
+		result.code = EXIT_FAILURE;
 	}
-	return 0;
+	if (metadataCollector) {
+		result.terminateWithoutDllDetach = !metadataCollector->StopUntil(ppm::Clock::now() + kMetadataShutdownBudget);
+		metadataCollector->LogDiagnostics();
+		if (result.terminateWithoutDllDetach) {
+			metadataCollector->LogUnfinishedWorkers();
+			spdlog::warn("PrintHub will exit without DLL detach; printer metadata collection is still blocked");
+			spdlog::default_logger()->flush();
+		}
+	}
+	return result;
+}
+
+[[noreturn]] static void finishWithoutDllDetach(int exitCode) noexcept {
+	// Other components have already stopped. Do not unwind the CRT or run DLL
+	// detach with a printer provider still executing on a detached worker.
+	TerminateProcess(GetCurrentProcess(), static_cast<UINT>(exitCode));
+	std::abort(); // TerminateProcess on the current process does not return on success.
 }
 
 static VOID WINAPI svcMain(DWORD, LPTSTR*) {
@@ -277,18 +368,28 @@ static VOID WINAPI svcMain(DWORD, LPTSTR*) {
 		return;
 	}
 	reportServiceStatus(SERVICE_START_PENDING, NO_ERROR, 0, kServiceStatusWaitHintMs);
-	const auto result = g_args->ServiceOperation.has_value() ? EXIT_FAILURE : mainRun([] { reportServiceStatus(SERVICE_RUNNING); });
-	g_servExitCode.store(result);
-	if (result == EXIT_SUCCESS) {
+	const auto result = g_args->ServiceOperation.has_value() ? RunResult{EXIT_FAILURE} : mainRun([] { reportServiceStatus(SERVICE_RUNNING); });
+	g_servExitCode.store(result.code);
+	if (result.code == EXIT_SUCCESS) {
 		reportServiceStatus(SERVICE_STOPPED);
 	}
 	else {
-		reportServiceStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, static_cast<DWORD>(result));
+		reportServiceStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR, static_cast<DWORD>(result.code));
 	}
+	if (result.terminateWithoutDllDetach) finishWithoutDllDetach(result.code);
 	g_serviceStatusHandle = nullptr;
 }
 
 int main(int argc, char* argv[]) {
+	auto parsedArguments = std::make_unique<Arguments>();
+	try {
+		parsedArguments->Parse(argc, argv);
+	} catch (const std::exception& error) {
+		std::cerr << "Failed to parse arguments: " << error.what() << std::endl;
+		parsedArguments->PrintHelp();
+		return EXIT_FAILURE;
+	}
+	g_args = std::move(parsedArguments);
 	g_shutdownEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
 	if (!g_shutdownEvent) {
 		std::cerr << "Failed to create shutdown event: " << GetLastError() << std::endl;
@@ -331,8 +432,10 @@ int main(int argc, char* argv[]) {
 		}
 		SetConsoleCtrlHandler(consoleHandler, TRUE);
 		const auto result = mainRun();
+		if (result.terminateWithoutDllDetach) finishWithoutDllDetach(result.code);
+		SetConsoleCtrlHandler(consoleHandler, FALSE);
 		closeShutdownEvent();
-		return result;
+		return result.code;
 	}
 	spdlog::error("Failed to start service control dispatcher: {}", dispatcherError);
 	closeShutdownEvent();

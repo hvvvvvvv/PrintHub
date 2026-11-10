@@ -18,6 +18,7 @@ constexpr auto kLpdMaxControlFileBytes = "--lpd-max-control-file-bytes";
 constexpr auto kLpdMinThreads = "--lpd-min-threads";
 constexpr auto kListenAddress = "--listen-address";
 constexpr auto kSnmpReject = "--snmp-reject";
+constexpr auto kSnmpPpm = "--snmp-ppm";
 constexpr auto kLogLevel = "--log-level";
 
 uint16_t parsePort(const std::string& text, const char* name) {
@@ -115,6 +116,8 @@ ServiceConfiguration ServiceConfiguration::Parse(const std::vector<std::string>&
             result.listenAddress = requireValue(arguments, position, kListenAddress);
         } else if (argument == kSnmpReject) {
             result.snmpReject = true;
+        } else if (argument == kSnmpPpm) {
+            result.snmpPpm = true;
         } else if (argument == kLogLevel) {
             result.logLevel = ParseLogLevel(requireValue(arguments, position, kLogLevel));
         } else {
@@ -164,6 +167,9 @@ std::vector<std::string> ServiceConfiguration::ToArguments(ServiceConfigurationA
     if (snmpReject) {
         result.push_back(kSnmpReject);
     }
+    if (snmpPpm) {
+        result.push_back(kSnmpPpm);
+    }
     if (includeDefaults || lpdMinThreads != kDefaultMinThreads) {
         result.push_back(kLpdMinThreads);
         result.push_back(std::to_string(lpdMinThreads));
@@ -176,6 +182,9 @@ std::vector<std::string> ServiceConfiguration::ToArguments(ServiceConfigurationA
 }
 
 void ServiceConfiguration::Validate(bool requireRunnableListener) const {
+    if (snmpReject && snmpPpm) {
+        throw std::invalid_argument("--snmp-reject and --snmp-ppm are mutually exclusive");
+    }
     if (rawServerMinThreads < 1 || lpdMinThreads < 1 || maxPendingClients < 1) {
         throw std::invalid_argument("Thread counts and maximum pending clients must be at least 1");
     }
@@ -190,6 +199,9 @@ void ServiceConfiguration::Validate(bool requireRunnableListener) const {
     }
     if (requireRunnableListener && rawServers.empty() && lpdQueues.empty()) {
         throw std::invalid_argument("Configure at least one RAW printer or LPD queue");
+    }
+    if (snmpPpm && !lpdQueues.empty() && lpdPort != kDefaultLpdPort) {
+        throw std::invalid_argument("--snmp-ppm requires LPD port 515 for Windows TCP/IP port discovery");
     }
     std::set<uint16_t> ports;
     for (const auto& server : rawServers) {
@@ -207,6 +219,12 @@ void ServiceConfiguration::Validate(bool requireRunnableListener) const {
         const auto& mapping = lpdQueues[index];
         if (mapping.queueName.empty() || mapping.printerName.empty() || mapping.queueName.find('=') != std::string::npos) {
             throw std::invalid_argument("LPD queue and printer name are required; queue name cannot contain '='");
+        }
+        if (snmpPpm && (mapping.queueName.size() > 32 ||
+            !std::all_of(mapping.queueName.begin(), mapping.queueName.end(), [](unsigned char character) {
+                return character >= 0x21 && character <= 0x7e;
+            }))) {
+            throw std::invalid_argument("--snmp-ppm requires LPD queue names of 1 to 32 printable ASCII characters without whitespace");
         }
         for (size_t earlier = 0; earlier < index; ++earlier) {
             if (equalsAsciiCaseInsensitive(mapping.queueName, lpdQueues[earlier].queueName)) {

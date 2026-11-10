@@ -11,6 +11,16 @@ endif()
 cmake_policy(SET CMP0091 NEW)
 
 project (PrintHub VERSION 1.0.2)
+# The CLI build selects an installed MSVC language and UTF-8 output. Override a
+# localized prefix cached with the wrong code page: otherwise Ninja silently
+# misses header dependencies and can link incompatible stale object files.
+if(MSVC AND "$ENV{VSLANG}" STREQUAL "1033")
+  set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "Note: including file: ")
+  set(CMAKE_CL_SHOWINCLUDES_PREFIX "Note: including file: ")
+elseif(MSVC AND "$ENV{VSLANG}" STREQUAL "2052")
+  set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
+  set(CMAKE_CL_SHOWINCLUDES_PREFIX "注意: 包含文件: ")
+endif()
 if (NOT WIN32)
   message(FATAL_ERROR "PrintHub is a Windows-only network printing service.")
 endif()

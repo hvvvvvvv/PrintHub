@@ -16,6 +16,8 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
 
+    [switch]$CleanFirst,
+
     [switch]$Help
 )
 
@@ -43,6 +45,7 @@ Usage:
 Options:
   -Architecture <x64|x86>         Target architecture. Default: x64
   -Configuration <Debug|Release>  Build configuration. Default: Release
+  -CleanFirst                     Rebuild generated targets without stale objects.
   -Help                           Show this help message.
 
 Examples:
@@ -274,8 +277,17 @@ try {
     $savedVcpkgRoot = $env:VCPKG_ROOT
     $savedPath = $env:PATH
     $savedLocalAppData = $env:LOCALAPPDATA
+    $savedVsLang = $env:VSLANG
     try {
         $env:VCPKG_ROOT = $vcpkgRoot
+        # Prefer English when installed, but a Chinese-only compiler falls
+        # back silently if 1033 is requested. Select a resource that actually
+        # exists so CMake's dependency prefix matches the compiler output.
+        $compilerVersionPath = Join-Path $visualStudio.InstallationPath 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'
+        $compilerVersion = (Get-Content -LiteralPath $compilerVersionPath -Raw).Trim()
+        $compilerUiDirectory = Join-Path $visualStudio.InstallationPath ("VC\Tools\MSVC\$compilerVersion\bin\Host$hostArchitecture\$Architecture")
+        if (Test-Path -LiteralPath (Join-Path $compilerUiDirectory '1033\clui.dll')) { $env:VSLANG = '1033' }
+        elseif (Test-Path -LiteralPath (Join-Path $compilerUiDirectory '2052\clui.dll')) { $env:VSLANG = '2052' }
         $env:PATH = (Split-Path -Parent $cmakePath) + ';' + (Split-Path -Parent $ninjaPath) + ';' + $savedPath
         # Keep vcpkg's mutable registry clone within the build output. This
         # avoids requiring write access to a user's global AppData cache.
@@ -287,8 +299,13 @@ try {
             # VsDevCmd can leave PATH and Path with different values when
             # invoked from PowerShell. CMake observes Path, so normalize it
             # after activating the MSVC environment.
-            $commandLine = 'call "{0}" -arch={1} -host_arch={2} && set "Path=!PATH!" && "{3}" --preset {4} && "{3}" --build "{5}"' -f `
-                $visualStudio.DevCmdPath, $Architecture, $hostArchitecture, $cmakePath, $preset, $buildDirectory
+            $cleanArgument = if ($CleanFirst) { ' --clean-first' } else { '' }
+            if ($CleanFirst -and -not ([IO.Path]::GetFullPath($buildDirectory).StartsWith(
+                (Join-Path $repositoryRoot 'out\build\'), [StringComparison]::OrdinalIgnoreCase))) {
+                Stop-Build 'Refusing to clean a build directory outside this workspace.'
+            }
+            $commandLine = 'call "{0}" -arch={1} -host_arch={2} && set "Path=!PATH!" && chcp 65001 >nul && "{3}" --preset {4} && "{3}" --build "{5}"{6}' -f `
+                $visualStudio.DevCmdPath, $Architecture, $hostArchitecture, $cmakePath, $preset, $buildDirectory, $cleanArgument
             & $env:ComSpec /v:on /d /c $commandLine
             if ($LASTEXITCODE -ne 0) {
                 Stop-Build "CMake 构建失败，退出代码：$LASTEXITCODE"
@@ -302,6 +319,7 @@ try {
         $env:VCPKG_ROOT = $savedVcpkgRoot
         $env:PATH = $savedPath
         $env:LOCALAPPDATA = $savedLocalAppData
+        $env:VSLANG = $savedVsLang
     }
 
     foreach ($binaryPath in @($serviceBinaryPath, $managerBinaryPath)) {

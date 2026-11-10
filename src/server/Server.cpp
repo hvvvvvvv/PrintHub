@@ -89,16 +89,26 @@ void PrintServer::Start() {
 
     m_workerThreads.clear();
     m_stopping = false;
-    for (int i = 0; i < m_minThreads; ++i) {
-        m_workerThreads.emplace_back([this](std::stop_token stopToken) { workerThread(stopToken); });
-    }
-    const auto listenSocket = m_listenSocket.get();
-    m_acceptThread = std::jthread([this, listenSocket](std::stop_token stopToken) { listenLoop(stopToken, listenSocket); });
     m_shutdown = false;
+    try {
+        for (int i = 0; i < m_minThreads; ++i) {
+            m_workerThreads.emplace_back([this](std::stop_token stopToken) { workerThread(stopToken); });
+        }
+        const auto listenSocket = m_listenSocket.get();
+        m_acceptThread = std::jthread([this, listenSocket](std::stop_token stopToken) { listenLoop(stopToken, listenSocket); });
+    } catch (...) {
+        // Workers already launched must be joined while their queue and locks still exist.
+        stopLocked();
+        throw;
+    }
 }
 
 void PrintServer::Stop() {
     std::lock_guard<std::mutex> lock(m_statusMutex);
+    stopLocked();
+}
+
+void PrintServer::stopLocked() {
     if (m_shutdown) {
         return;
     }

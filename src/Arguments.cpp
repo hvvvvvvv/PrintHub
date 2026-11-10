@@ -27,6 +27,8 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
         .default_value(std::string(DEFAULT_LISTEN_ADDRESS));
     m_parser.add_argument(ARGS_SNMP_REJECT).help("Reply immediately to SNMP v1/v2c discovery requests on UDP port 161")
         .default_value(DEFAULT_SNMP_REJECT).implicit_value(true);
+    m_parser.add_argument(ARGS_SNMP_PPM).help("Publish printers, RAW/LPR ports, automatic device identity and queue status through SNMP on UDP 161 (exclusive with --snmp-reject)")
+        .default_value(DEFAULT_SNMP_PPM).implicit_value(true);
     m_parser.add_argument(ARGS_LOG_LEVEL).help("Set log level, choices(trace | debug | info | warn | error | critical)")
         .default_value(DEFAULT_LOG_LEVEL).action(parseLogLevel);
     m_parser.add_argument(ARGS_SERVICE).help(fmt::format("Service management, choices({} | {} | {} | {} | {})",
@@ -42,6 +44,7 @@ Arguments::Arguments() : m_parser(argparse::ArgumentParser(PROJECT_NAME, PROJECT
     LpdMaxControlFileBytes = ServiceConfiguration::kDefaultLpdMaxControlFileBytes;
     ListenAddress = DEFAULT_LISTEN_ADDRESS;
     SnmpReject = DEFAULT_SNMP_REJECT;
+    SnmpPpm = DEFAULT_SNMP_PPM;
     LpdMinThreads = DEFAULT_MIN_THREADS;
     LogLevel = DEFAULT_LOG_LEVEL;
     ServiceOperation = std::nullopt;
@@ -88,6 +91,7 @@ void Arguments::Parse(int argc, char** argv) {
     LpdMaxControlFileBytes = configuration.lpdMaxControlFileBytes;
     ListenAddress = configuration.listenAddress;
     SnmpReject = configuration.snmpReject;
+    SnmpPpm = configuration.snmpPpm;
     LpdMinThreads = configuration.lpdMinThreads;
     LogLevel = parseLogLevel(ServiceConfiguration::LogLevelToString(configuration.logLevel));
     Silent = m_parser.get<bool>(ARGS_SILENT);
@@ -112,6 +116,7 @@ std::vector<std::string> Arguments::GetRawArguments(std::optional<std::set<std::
     configuration.lpdMaxControlFileBytes = LpdMaxControlFileBytes;
     configuration.listenAddress = ListenAddress;
     configuration.snmpReject = SnmpReject;
+    configuration.snmpPpm = SnmpPpm;
     configuration.lpdMinThreads = LpdMinThreads;
     configuration.logLevel = static_cast<ServiceLogLevel>(LogLevel);
 
@@ -157,8 +162,8 @@ std::string Arguments::Dump() const {
             result.append(fmt::format("  - {}={}\n", mapping.queueName, mapping.printerName));
         }
     }
-    result.append(fmt::format("RawServerMinThreads: {}\nMaxPendingClients: {}\nLpdPort: {}\nLpdMaxControlFileBytes: {}\nListenAddress: {}\nSnmpReject: {}\nLpdMinThreads: {}\nLogLevel: {}\n",
-        RawServerMinThreads, MaxPendingClients, LpdPort, LpdMaxControlFileBytes, ListenAddress, SnmpReject, LpdMinThreads, logLevelToString(LogLevel)));
+    result.append(fmt::format("RawServerMinThreads: {}\nMaxPendingClients: {}\nLpdPort: {}\nLpdMaxControlFileBytes: {}\nListenAddress: {}\nSnmpReject: {}\nSnmpPpm: {}\nLpdMinThreads: {}\nLogLevel: {}\n",
+        RawServerMinThreads, MaxPendingClients, LpdPort, LpdMaxControlFileBytes, ListenAddress, SnmpReject, SnmpPpm, LpdMinThreads, logLevelToString(LogLevel)));
     result.append(ServiceOperation.has_value() ? fmt::format("ServiceOperation: {}\n", *ServiceOperation) : "ServiceOperation: not set\n");
     result.append(fmt::format("Silent: {}", Silent));
     return result;

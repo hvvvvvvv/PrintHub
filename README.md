@@ -8,7 +8,7 @@ PrintHub 是一个仅支持 Windows 的网络打印服务，可将网络客户�
 - `PrintHub.exe`：Windows 服务程序，提供 RAW 和 LPD 网络打印。
 - `PrintHubManager.exe`：需要管理员权限的本机管理面板，用于维护打印机映射并安装、
   更新和管理服务。
-- 可选的 SNMP 快速拒绝功能，用于改善 Windows 添加标准 TCP/IP 打印机端口时的发现体验。
+- 可选的 SNMP 快速拒绝和 PPM MIB 发现功能，用于 Windows 添加标准 TCP/IP 打印机端口。
 
 ## 下载
 
@@ -74,6 +74,30 @@ Windows 的“添加标准 TCP/IP 打印机端口”向导可能会等待 SNMP �
 
 详见 [Windows SNMP 快速拒绝说明](docs/windows-snmp-reject.md)。
 
+## SNMP PPM 发现
+
+使用 `--snmp-ppm` 可以向 Windows 标准 TCP/IP 端口监视器公布同一 IP 下的多台
+打印机及其 RAW/LPR 参数：
+
+```powershell
+.\PrintHub.exe --raw-server "Office Printer:9100" --raw-server "Reports Printer:9101" --snmp-ppm
+```
+
+SNMP 默认关闭；`--snmp-ppm` 与 `--snmp-reject` 互斥，需要放通入站 UDP `161`。
+相同映射的发现索引在重启和参数重排后保持一致，不持久化索引。PPM LPR 使用 TCP
+`515`，队列名须为最多 `32` 字节的无空白 ASCII。PPM 还会从后端 Windows 队列
+尽力读取并缓存状态，并优先通过 Windows Bidi 自动读取真实 IEEE-1284 Device ID。
+采集由 PrintHub 进程内的后台线程完成，发现和打印均不等待采集。新添加的 Windows
+TCP/IP 端口默认不启用 SNMP 状态轮询；升级不会改写旧端口的设置。
+Bidi 未返回有效非空 ID 时，仅对未脱机、由微软 USB 端口监视器管理且设备映射唯一的
+本地队列尝试只读 USB 备用查询；失败时保留空身份，不伪造型号。获取阶段与错误码
+记录在 info 日志，真实 USB 正向获取仍需实机验证。客户端匹配驱动取决于真实 ID
+和已安装驱动。
+
+PPM 配置本轮通过 CLI 安装和更新。现有管理面板可以启动、停止、重启服务，
+但“安装/更新”会丢失 `--snmp-ppm`。详见
+[Windows PPM 发现与部署说明](docs/windows-snmp-ppm.md)。
+
 ## 构建
 
 构建需要：
@@ -104,3 +128,4 @@ Windows 的“添加标准 TCP/IP 打印机端口”向导可能会等待 SNMP �
 - [服务管理面板](docs/service-manager.md)
 - [Windows LPR 兼容性验证](docs/windows-lpr-compatibility.md)
 - [Windows SNMP 快速拒绝](docs/windows-snmp-reject.md)
+- [Windows SNMP PPM 发现](docs/windows-snmp-ppm.md)

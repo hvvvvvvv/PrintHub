@@ -36,6 +36,7 @@ class PrintServer {
 		
 		virtual void handleClient(TcpClient& client) = 0;
 	private:
+		void stopLocked();
 		void listenLoop(std::stop_token stopToken, SOCKET listenSocket);
 		void workerThread(std::stop_token stopToken);
 

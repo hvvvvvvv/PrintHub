@@ -50,6 +50,7 @@ struct ServiceConfiguration {
     size_t lpdMaxControlFileBytes = kDefaultLpdMaxControlFileBytes;
     std::string listenAddress = "0.0.0.0";
     bool snmpReject = false;
+    bool snmpPpm = false;
     int lpdMinThreads = kDefaultMinThreads;
     ServiceLogLevel logLevel = ServiceLogLevel::Info;
 
