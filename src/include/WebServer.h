@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -12,7 +11,6 @@
 namespace printhub::web {
 
 bool IsValidAccessToken(std::string_view token);
-std::string ReadRecentLogLinesJson(const std::filesystem::path& logDirectory, int tailLines);
 
 struct ApplyResponse {
     int status = 500;
@@ -23,10 +21,10 @@ struct Options {
     std::string listenAddress = "127.0.0.1";
     std::uint16_t port = 8323;
     std::string accessToken;
-    std::filesystem::path logDirectory;
     std::string version;
     std::function<std::string()> statusJson;
     std::function<std::string()> configJson;
+    std::function<std::string(int tail)> logsJson;
     std::function<std::string()> printersJson;
     std::function<ApplyResponse(std::string_view body)> applyConfig;
 };

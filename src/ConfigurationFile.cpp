@@ -247,6 +247,36 @@ ServiceConfiguration LoadConfigurationFile(const std::filesystem::path& path) {
     return ParseConfigurationJson(content, source);
 }
 
+ServiceConfiguration LoadOrCreateConfigurationFile(const std::filesystem::path& path, bool* created) {
+    if (created) *created = false;
+    try {
+        return LoadConfigurationFile(path);
+    } catch (const std::exception& loadError) {
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) throw;
+        const auto error = GetLastError();
+        if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) throw;
+
+        try {
+            const auto parent = path.parent_path();
+            if (!parent.empty()) {
+                std::error_code directoryError;
+                std::filesystem::create_directories(parent, directoryError);
+                if (directoryError) {
+                    throw std::runtime_error("Cannot create configuration directory '" +
+                        WideToUtf8(parent.native()) + "': " + directoryError.message());
+                }
+            }
+            ServiceConfiguration defaults;
+            SaveConfigurationFile(path, defaults);
+            if (created) *created = true;
+            return defaults;
+        } catch (const std::exception& createError) {
+            throw std::runtime_error(std::string(loadError.what()) +
+                "; could not create default configuration: " + createError.what());
+        }
+    }
+}
+
 void SaveConfigurationFile(const std::filesystem::path& path, const ServiceConfiguration& configuration) {
     const auto content = SerializeConfigurationJson(configuration);
     const auto source = WideToUtf8(path.native());

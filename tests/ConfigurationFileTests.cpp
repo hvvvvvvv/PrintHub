@@ -2,6 +2,7 @@
 
 #include "TestSupport.h"
 
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <system_error>
@@ -121,6 +122,20 @@ void writeFile(const std::filesystem::path& path, std::string_view content) {
             static_cast<DWORD>(content.size() - offset), &count, nullptr) != FALSE, "Cannot write test file");
         require(count != 0, "Zero-byte test write");
         offset += static_cast<size_t>(count);
+    }
+}
+
+std::string readFile(const std::filesystem::path& path) {
+    TestHandle file(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    require(file.get() != INVALID_HANDLE_VALUE, "Cannot open test file");
+    std::string content;
+    std::array<char, 4096> buffer{};
+    for (;;) {
+        DWORD count = 0;
+        require(ReadFile(file.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr) != FALSE,
+            "Cannot read test file");
+        if (count == 0) return content;
+        content.append(buffer.data(), static_cast<size_t>(count));
     }
 }
 
@@ -412,6 +427,90 @@ void testLoadFiles() {
     }
 }
 
+void testLoadOrCreateConfigurationFile() {
+    TemporaryDirectory directory;
+    const ServiceConfiguration defaults;
+    const auto path = directory.path() / L"missing-\u6253\u5370" / "nested" / "config.json";
+    bool created = false;
+    const auto initial = LoadOrCreateConfigurationFile(path, &created);
+    require(created, "Missing configuration must be created");
+    require(std::filesystem::is_directory(path.parent_path()), "Missing parent directories must be created");
+    require(std::filesystem::is_regular_file(path), "Default configuration file is missing");
+    require(initial.printerMap.empty(), "Default configuration must not contain printer mappings");
+    requireSame(initial, defaults);
+    requireSame(LoadConfigurationFile(path), defaults);
+    require(!std::filesystem::exists(temporarySavePath(path)), "Default creation left a temporary file");
+    const auto defaultContent = readFile(path);
+
+    created = true;
+    requireSame(LoadOrCreateConfigurationFile(path, &created), defaults);
+    require(!created, "Repeated load must not report creation");
+    require(readFile(path) == defaultContent, "Repeated load changed default configuration bytes");
+    requireSame(LoadOrCreateConfigurationFile(path, nullptr), defaults);
+    require(readFile(path) == defaultContent, "Load with null flag changed configuration bytes");
+
+    const auto existing = directory.path() / "existing.json";
+    writeFile(existing, kFullConfiguration);
+    created = true;
+    requireSame(LoadOrCreateConfigurationFile(existing, &created), ParseConfigurationJson(kFullConfiguration, "test"));
+    require(!created, "Existing valid file must not report creation");
+    require(readFile(existing) == kFullConfiguration, "Existing valid file was rewritten");
+
+    const auto invalid = directory.path() / "invalid.json";
+    for (const auto* content : {"{", R"({"maxPendingClients":0})"}) {
+        writeFile(invalid, content);
+        created = true;
+        requireThrows([&] { LoadOrCreateConfigurationFile(invalid, &created); }, "Invalid existing file accepted");
+        require(!created, "Invalid existing file must not report creation");
+        require(readFile(invalid) == content, "Invalid existing file was overwritten");
+    }
+
+    {
+        TestHandle locked(CreateFileW(existing.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        require(locked.get() != INVALID_HANDLE_VALUE, "Cannot lock existing configuration");
+        created = true;
+        requireThrows<std::runtime_error>([&] { LoadOrCreateConfigurationFile(existing, &created); },
+            "Unreadable existing file accepted");
+        require(!created, "Unreadable existing file must not report creation");
+    }
+    require(readFile(existing) == kFullConfiguration, "Unreadable existing file was overwritten");
+
+    const auto targetDirectory = directory.path() / "directory.json";
+    require(std::filesystem::create_directory(targetDirectory), "Cannot create directory target");
+    created = true;
+    requireThrows<std::runtime_error>([&] { LoadOrCreateConfigurationFile(targetDirectory, &created); },
+        "Existing directory accepted as a configuration file");
+    require(!created && std::filesystem::is_directory(targetDirectory), "Existing directory was changed");
+
+    const auto blockedParent = directory.path() / "parent";
+    writeFile(blockedParent, "parent file");
+    created = true;
+    requireThrows<std::runtime_error>([&] { LoadOrCreateConfigurationFile(blockedParent / "config.json", &created); },
+        "A file was accepted as a parent directory");
+    require(!created, "Blocked creation must not report success");
+    require(readFile(blockedParent) == "parent file", "Blocked creation changed the parent file");
+
+    const auto failedSave = directory.path() / "failed-save.json";
+    const auto collision = temporarySavePath(failedSave);
+    writeFile(collision, "existing temporary file");
+    created = true;
+    std::string failure;
+    try {
+        LoadOrCreateConfigurationFile(failedSave, &created);
+    } catch (const std::runtime_error& error) {
+        failure = error.what();
+    }
+    require(failure.find("CreateFileW failed (Win32 error ") != std::string::npos,
+        "Creation failure must retain the original load error");
+    require(failure.find("; could not create default configuration: ") != std::string::npos &&
+        failure.find("CreateFileW temporary file failed (Win32 error ") != std::string::npos,
+        "Creation failure must include the save error");
+    require(failure.find(WideToUtf8(failedSave.native())) != std::string::npos,
+        "Creation failure must include the configuration path");
+    require(!created && !std::filesystem::exists(failedSave), "Failed save must not create a configuration");
+    require(readFile(collision) == "existing temporary file", "Failed save changed an existing temporary file");
+}
+
 void testSaveFiles() {
     TemporaryDirectory directory;
     const auto path = directory.path() / L"config-\u6253\u5370.json";
@@ -467,6 +566,7 @@ int main() {
         runTest("encoding", testEncoding);
         runTest("serialization", testSerialization);
         runTest("load files", testLoadFiles);
+        runTest("load or create configuration file", testLoadOrCreateConfigurationFile);
         runTest("save files", testSaveFiles);
     } catch (const std::exception& error) {
         std::cerr << "Configuration file tests failed: " << error.what() << '\n';

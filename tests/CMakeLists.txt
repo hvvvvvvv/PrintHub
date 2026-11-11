@@ -36,6 +36,12 @@ printhub_add_test(PrintHubCommandLineTests
 )
 target_link_libraries(PrintHubCommandLineTests PRIVATE shell32)
 
+printhub_add_test(PrintHubLogBufferTests
+    LogBufferTests.cpp
+    ${PROJECT_SOURCE_DIR}/src/LogBuffer.cpp
+)
+target_link_libraries(PrintHubLogBufferTests PRIVATE spdlog::spdlog)
+
 printhub_add_test(PrintHubAsciiTextTests AsciiTextTests.cpp)
 printhub_add_test(PrintHubBoundedQueueTests BoundedQueueTests.cpp)
 printhub_add_test(PrintHubSnmpBerTests SnmpBerTests.cpp)

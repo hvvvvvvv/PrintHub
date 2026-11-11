@@ -217,6 +217,7 @@ Options:
 LAN example:
   PrintHub.exe --web-bind 0.0.0.0 --web-port 8323 --web-token "ChangeMe-0123456789"
 
-The configuration file is UTF-8 JSON; see docs/configuration.md and config.example.json.
+The configuration file is UTF-8 JSON; a missing file is created with default settings.
+See docs/configuration.md.
 )";
 }

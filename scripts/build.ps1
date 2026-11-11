@@ -64,7 +64,6 @@ or Build Tools 2022 with the MSVC x86/x64 toolset is required and is not install
 
 Output:
   out\publish\<architecture>-<configuration>\PrintHub.exe
-  out\publish\<architecture>-<configuration>\config.example.json
 '@ | Write-Host
 }
 
@@ -309,7 +308,6 @@ try {
     $preset = '{0}-{1}' -f $Architecture, $Configuration.ToLowerInvariant()
     $buildDirectory = Get-PresetBuildDirectory -RepositoryRoot $repositoryRoot -PresetName $preset
     $serviceBinaryPath = Join-Path $buildDirectory 'src\PrintHub.exe'
-    $configExamplePath = Join-Path $repositoryRoot 'config.example.json'
     $publishDirectory = Join-Path $repositoryRoot (Join-Path 'out\publish' $preset)
 
     $visualStudio = Get-VisualStudioInstallation
@@ -377,10 +375,6 @@ try {
 
     New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
     Copy-Item -LiteralPath $serviceBinaryPath -Destination (Join-Path $publishDirectory 'PrintHub.exe') -Force
-    if (-not (Test-Path -LiteralPath $configExamplePath -PathType Leaf)) {
-        Stop-Build '未找到 config.example.json'
-    }
-    Copy-Item -LiteralPath $configExamplePath -Destination (Join-Path $publishDirectory 'config.example.json') -Force
 
     if ($configuration -eq 'Release') {
         $servicePdbPath = Join-Path $buildDirectory 'src\PrintHub.pdb'

@@ -7,7 +7,7 @@ PrintHub 从一个 JSON 文件读取全部打印服务配置，包括打印机�
 ## 文件位置与路径
 
 默认配置路径是 `<PrintHub.exe 所在目录>\config.json`，与启动命令的工作目录无关。
-首次使用时，将发布包中的 `config.example.json` 复制为 `config.json` 并编辑。
+首次启动时，若配置文件不存在，程序会自动生成默认配置，再继续启动。
 
 可以使用 `-c PATH`、`--config PATH`、`-c=PATH` 或 `--config=PATH` 指定其他文件。
 显式指定的相对路径以进程当前工作目录为基准解析为绝对路径；包含空格的路径应加
@@ -30,6 +30,23 @@ JSON 中没有 Web 相关配置字段。Web 监听地址、端口和显式 token
 不随打印配置热重载。默认监听 `127.0.0.1:8323`；未指定 token 时，每次启动随机生成
 32 字节并编码为 64 个小写十六进制字符。每次启动都会将当前 token 打印到日志，
 生成的值标注 `generated`，即使 `logLevel` 高于 `info` 或为 `off` 也会写入。
+
+## 首次启动自动创建
+
+默认路径与 `-c/--config` 指定的路径遵循相同规则：只有配置文件或其父目录不存在时
+才创建配置，缺失的父目录会递归创建。生成的 UTF-8 JSON 使用下方[字段表](#字段表)中的
+默认值，`printerMap` 为 `[]`；成功创建会记录日志。
+
+默认配置不启动 RAW/LPD 打印监听器，并跳过 PPM；Web 面板可正常启动。
+在面板中添加映射并保存即可热应用，也可手工编辑 JSON 后重启。
+
+文件已存在但 JSON 无效、字段非法或不可读时仍阻止启动，不会覆盖原文件。
+创建父目录或写入文件失败（例如无权限、磁盘错误）也会阻止启动，并记录原加载错误和
+创建失败的原因。
+
+`--service install` 对已存在的配置文件仍执行加载校验；文件不存在时允许安装，
+安装阶段不会创建文件，而是由首次服务启动创建。服务运行账户须有创建所需父目录和
+写入配置文件的权限，安装成功不代表首次启动一定能够写入配置。
 
 ## 格式与错误
 
@@ -73,8 +90,9 @@ config.json: printerMap[0].rawServer.port: expected integer 1..65535
 
 ## 完整示例
 
-以下内容与发布包中的 `config.example.json` 一致。将 `name` 的 `Printer1`
-替换为实际 Windows 打印机名称；`lprQueue` 是客户端使用的队列名，可独立命名。
+以下为完整字段示例；首次自动生成的配置使用默认值且 `printerMap` 为空。
+使用此示例时，将 `name` 的 `Printer1` 替换为实际 Windows 打印机名称；
+`lprQueue` 是客户端使用的队列名，可独立命名。
 此示例提供 LPR/TCP `515`、RAW/TCP `9100` 和 SNMP/UDP `161`。
 
 ```json
@@ -238,9 +256,10 @@ PrintHub.exe --version
 
 1. 在替换旧程序前，在旧程序目录的管理员 PowerShell 中执行
    `.\PrintHub.exe --service stop`，再执行 `.\PrintHub.exe --service uninstall`。
-2. 部署新版本，将 `config.example.json` 复制为 `config.json`，按原部署填写
-   `printerMap`、监听地址、端口及其他设置。每条映射都需要 `lprQueue`；同时确认
-   默认开启的 PPM 是否符合部署需求。
+2. 部署新版本。配置尚不存在时，可先前台运行 `.\PrintHub.exe`，自动生成默认的
+   `config.json`，再通过 Web 面板按原部署填写 `printerMap`、监听地址、端口及其他
+   设置，保存后退出前台进程。也可手工创建内容为 `{}` 的默认配置文件，再按本文
+   编辑。每条映射都需要 `lprQueue`；同时确认默认开启的 PPM 是否符合部署需求。
 3. 在新程序目录执行 `.\PrintHub.exe --service install`，或用 `-c` 指定文件，
    然后执行 `.\PrintHub.exe --service start`。
 

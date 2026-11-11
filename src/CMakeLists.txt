@@ -23,6 +23,7 @@ add_library(PrintHubWebAssets STATIC "${web_assets_source}")
 add_executable(${EXECUTABLE_NAME}
     CommandLine.cpp
     ConfigurationFile.cpp
+    LogBuffer.cpp
     Main.cpp
     PrintRuntime.cpp
     ServiceConfiguration.cpp

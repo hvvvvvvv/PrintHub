@@ -269,7 +269,8 @@ void testUnknownOptionsAndHelp() {
         usage.find("default: random per start, printed to the log") != std::string::npos,
         "Usage describes a token value and the random startup default");
     require(usage.find("docs/configuration.md") != std::string::npos &&
-        usage.find("config.example.json") != std::string::npos, "Usage points to configuration documentation");
+        usage.find("missing file is created with default settings") != std::string::npos,
+        "Usage points to configuration documentation and default creation");
 }
 
 void testWindowsQuoting() {

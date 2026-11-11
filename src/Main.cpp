@@ -23,11 +23,13 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <fmt/format.h>
 #include <CommandLine.hpp>
 #include <ConfigurationFile.hpp>
+#include <LogBuffer.h>
 #include <PrintRuntime.h>
 #include <TextEncoding.h>
 #include <WebServer.h>
@@ -45,6 +47,8 @@ constexpr DWORD kServiceStatusWaitHintMs = 60000;
 constexpr DWORD kInitialServiceCheckpoint = 1;
 constexpr DWORD kServiceStopCheckpointIntervalMs = 5000;
 constexpr DWORD kMetadataDiagnosticPollMs = 1000;
+
+std::shared_ptr<LogBuffer> g_logBuffer;
 
 std::wstring widenAscii(std::string_view value) {
 	return std::wstring(value.begin(), value.end());
@@ -165,6 +169,15 @@ struct WebRuntimeState {
 
 std::string DumpJson(const Json& value) {
 	return value.dump(-1, ' ', false, Json::error_handler_t::replace);
+}
+
+std::string RecentLogsJson(const std::shared_ptr<LogBuffer>& buffer, int tail) {
+	Json lines = Json::array();
+	if (buffer) {
+		const auto count = static_cast<std::size_t>((std::max)(tail, 0));
+		for (const auto& line : buffer->Snapshot(count)) lines.push_back(line);
+	}
+	return DumpJson({{"lines", std::move(lines)}});
 }
 
 std::string InstalledPrinterNamesJson() {
@@ -375,6 +388,8 @@ static void setupLogger() {
 	auto fileSink = std::make_shared<spdlog::sinks::daily_file_sink_mt>(logPathToAcp(logPath), kLogRotationHour, kLogRotationMinute, false, kLogRetentionDays);
 	fileSink->set_level(spdlog::level::trace);
 	spdlog::default_logger()->sinks().push_back(fileSink);
+	g_logBuffer = std::make_shared<LogBuffer>(80);
+	spdlog::default_logger()->sinks().push_back(g_logBuffer);
 
 	spdlog::set_pattern("%Y-%m-%d %H:%M:%S.%e %l : %v");
 
@@ -391,7 +406,10 @@ static void serviceActionHandle(ServiceAction action) {
 		if (serviceManager.IsInstalled()) {
 			throw std::runtime_error(fmt::format("Service {} is already installed.", PROJECT_NAME));
 		}
-		(void)LoadConfigurationFile(g_commandLine->configPath);
+		std::error_code existsError;
+		if (std::filesystem::exists(g_commandLine->configPath, existsError) || existsError) {
+			(void)LoadConfigurationFile(g_commandLine->configPath);
+		}
 		utility::ServiceManager::InstallArgs args;
 		args.binaryPath = utility::getExecutablePathW();
 		args.arguments = BuildInstallArguments(*g_commandLine);
@@ -531,7 +549,11 @@ static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 	std::string displayPath;
 	try {
 		displayPath = WideToUtf8(g_commandLine->configPath.native());
-		g_configuration = LoadConfigurationFile(g_commandLine->configPath);
+		bool created = false;
+		g_configuration = LoadOrCreateConfigurationFile(g_commandLine->configPath, &created);
+		if (created) {
+			spdlog::info("Configuration file '{}' was not found; created default configuration with an empty printerMap", displayPath);
+		}
 	} catch (const std::exception& error) {
 		spdlog::error("Failed to load configuration '{}': {}", displayPath, error.what());
 		return { EXIT_FAILURE, false };
@@ -569,7 +591,6 @@ static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 			options.listenAddress = settings.listenAddress;
 			options.port = settings.port;
 			options.accessToken = settings.accessToken;
-			options.logDirectory = utility::getExecutablePathW().parent_path() / L"logs";
 			options.version = PROJECT_VERSION;
 			options.statusJson = [state, settings] {
 				if (state->stopping.load()) throw std::runtime_error("Print runtime is shutting down");
@@ -579,6 +600,7 @@ static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 				if (state->stopping.load()) throw std::runtime_error("Print runtime is shutting down");
 				return state->runtime.CurrentConfigJson();
 			};
+			options.logsJson = [buffer = g_logBuffer](int tail) { return RecentLogsJson(buffer, tail); };
 			options.printersJson = [] { return InstalledPrinterNamesJson(); };
 			options.applyConfig = [state](std::string_view body) {
 				return ApplyConfiguration(*state, body);

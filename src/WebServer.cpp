@@ -10,7 +10,6 @@
 #include <WebServer.h>
 #include <ConfigurationFile.hpp>
 #include <Ipv4.h>
-#include <TextEncoding.h>
 
 #include <algorithm>
 #include <array>
@@ -21,7 +20,6 @@
 #include <system_error>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include <httplib.h>
 #include <nlohmann/json.hpp>
@@ -34,26 +32,6 @@ namespace {
 
 using Json = nlohmann::json;
 constexpr std::size_t kMaxTokenBytes = 256;
-constexpr std::size_t kLogReadBytes = 64 * 1024;
-
-class FileHandle {
-public:
-    explicit FileHandle(HANDLE handle) : handle_(handle) {}
-    ~FileHandle() {
-        if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
-    }
-    FileHandle(const FileHandle&) = delete;
-    FileHandle& operator=(const FileHandle&) = delete;
-    HANDLE get() const { return handle_; }
-
-private:
-    HANDLE handle_;
-};
-
-[[noreturn]] void fileError(std::string_view operation, const std::filesystem::path& path, DWORD code) {
-    throw std::runtime_error(std::string(operation) + " '" + WideToUtf8(path.native()) +
-        "': Win32 error " + std::to_string(code));
-}
 
 std::string dumpJson(const Json& value) {
     return value.dump(-1, ' ', false, Json::error_handler_t::replace);
@@ -122,81 +100,6 @@ bool IsValidAccessToken(std::string_view token) {
         std::all_of(token.begin(), token.end(), [](unsigned char character) {
             return character >= 0x21 && character <= 0x7e;
         });
-}
-
-std::string ReadRecentLogLinesJson(const std::filesystem::path& logDirectory, int tailLines) {
-    Json result{{"lines", Json::array()}};
-    std::filesystem::path latest;
-    std::error_code error;
-    const std::filesystem::directory_iterator end;
-    for (std::filesystem::directory_iterator item(logDirectory, error); !error && item != end;
-        item.increment(error)) {
-        const auto name = item->path().filename().native();
-        std::error_code typeError;
-        if (name.starts_with(L"PrintHub_") && name.ends_with(L".log") &&
-            item->is_regular_file(typeError) && !typeError &&
-            (latest.empty() || name > latest.filename().native())) {
-            latest = item->path();
-        }
-    }
-    if (latest.empty()) return dumpJson(result);
-
-    FileHandle file(CreateFileW(latest.c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (file.get() == INVALID_HANDLE_VALUE) fileError("Cannot open log file", latest, GetLastError());
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(file.get(), &size)) fileError("Cannot size log file", latest, GetLastError());
-    if (size.QuadPart < 0) throw std::runtime_error("Invalid log file size");
-    const auto start = std::max<LONGLONG>(0, size.QuadPart - static_cast<LONGLONG>(kLogReadBytes));
-    LARGE_INTEGER offset{};
-    // Peek at the preceding byte so a complete line at the window boundary is retained.
-    offset.QuadPart = start > 0 ? start - 1 : 0;
-    if (!SetFilePointerEx(file.get(), offset, nullptr, FILE_BEGIN)) {
-        fileError("Cannot seek log file", latest, GetLastError());
-    }
-    bool discardPartialLine = false;
-    if (start > 0) {
-        char preceding = 0;
-        DWORD count = 0;
-        if (!ReadFile(file.get(), &preceding, 1, &count, nullptr)) {
-            fileError("Cannot read log file", latest, GetLastError());
-        }
-        if (count == 0) return dumpJson(result);
-        discardPartialLine = preceding != '\n';
-    }
-    std::string contents(static_cast<std::size_t>(size.QuadPart - start), '\0');
-    std::size_t used = 0;
-    while (used < contents.size()) {
-        DWORD count = 0;
-        if (!ReadFile(file.get(), contents.data() + used,
-            static_cast<DWORD>(contents.size() - used), &count, nullptr)) {
-            fileError("Cannot read log file", latest, GetLastError());
-        }
-        if (count == 0) break;
-        used += count;
-    }
-    contents.resize(used);
-    std::string_view remaining(contents);
-    if (discardPartialLine) {
-        const auto newline = remaining.find('\n');
-        if (newline == std::string_view::npos) return dumpJson(result);
-        remaining.remove_prefix(newline + 1);
-    }
-    std::vector<std::string_view> lines;
-    while (!remaining.empty()) {
-        const auto newline = remaining.find('\n');
-        auto line = remaining.substr(0, newline);
-        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
-        lines.push_back(line);
-        if (newline == std::string_view::npos) break;
-        remaining.remove_prefix(newline + 1);
-    }
-    const auto count = std::min(lines.size(), static_cast<std::size_t>(std::clamp(tailLines, 1, 500)));
-    for (auto index = lines.size() - count; index < lines.size(); ++index) {
-        result["lines"].push_back(std::string(lines[index]));
-    }
-    return dumpJson(result);
 }
 
 struct Server::Impl {
@@ -304,14 +207,15 @@ struct Server::Impl {
             }
         });
         server.Get("/api/logs", [this](const httplib::Request& request, httplib::Response& response) {
-            int tail = 100;
+            int tail = 80;
             if (request.has_param("tail")) {
                 const auto value = request.get_param_value("tail");
                 int parsed = 0;
                 const auto [position, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
                 if (error == std::errc{} && position == value.data() + value.size()) tail = parsed;
             }
-            getJson([&] { return ReadRecentLogLinesJson(options.logDirectory, std::clamp(tail, 1, 500)); }, response);
+            tail = std::clamp(tail, 1, 80);
+            getJson([&] { return options.logsJson(tail); }, response);
         });
         server.Get("/api/printers", [this](const httplib::Request&, httplib::Response& response) {
             getJson(options.printersJson, response);

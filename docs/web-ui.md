@@ -27,8 +27,10 @@ Web 面板内置于 `PrintHub.exe`，无需另外部署页面文件。启用后�
 
 ## 启用步骤
 
-以下首次启用示例假定发布包已解压到 `C:\PrintHub`，并已从 `config.example.json`
-准备好 `config.json`。在该目录打开管理员 PowerShell。
+以下首次启用示例假定发布包已解压到 `C:\PrintHub`。在该目录打开管理员 PowerShell。
+无需预先准备配置文件：首次启动时，若默认的 `config.json` 或 `-c/--config` 指定的
+文件不存在，程序会创建父目录并生成默认配置，`printerMap` 为空。此时 Web 面板可用，
+在面板中添加映射并保存即可启动打印监听器；已存在但无效或不可读的配置仍会阻止启动。
 
 ### 1. 选择显式 token 或启动时随机生成
 
@@ -73,6 +75,8 @@ Select-String -Path .\logs\PrintHub_*.log -Pattern 'Web UI access token' | Selec
 .\PrintHub.exe --service start
 ```
 
+配置文件不存在时允许安装服务，由首次服务启动创建，服务运行账户须有创建目录和
+写入文件的权限；已存在的配置仍会在安装时校验。
 安装时把配置文件的绝对路径与显式 Web 参数写入服务 `ImagePath`，显式 token 的原始值
 也会写入，在注册表中可见，应限制服务配置的访问权限。未指定 token 时不会把 token
 写入 `ImagePath`，服务每次启动时随机生成；例如仅本机访问的随机模式安装命令：
@@ -157,17 +161,19 @@ API 认证头为 `X-PrintHub-Token`，所有 `/api/*`（包括不存在的 API �
 | `GET` | `/api/status` | 运行状态 JSON；状态读取异常时返回错误。 | `200`、`401`、`500` |
 | `GET` | `/api/config` | 完整的当前运行配置 JSON；读取异常时返回错误。 | `200`、`401`、`500` |
 | `PUT` | `/api/config` | body 为完整配置 JSON，保存并热应用；必须有合法的 `Content-Length`。 | `200`、`400`、`401`、`409`、`411`、`413`、`415`、`500` |
-| `GET` | `/api/logs?tail=N` | 最新日志文件末尾至多 N 行，返回 `{"lines":[...]}`；文件读取失败返回错误。 | `200`、`401`、`500` |
+| `GET` | `/api/logs?tail=N` | 从进程内内存环形缓冲返回启动以来最近的日志，至多 80 行；`tail` 为 1–80，默认 80，返回 `{"lines":[...]}`；回调异常返回错误。 | `200`、`401`、`500` |
 | `GET` | `/api/printers` | 需要 token；返回本机已安装打印机队列名称的 UTF-8 字符串数组，排除远程连接；枚举失败返回错误。 | `200`、`401`、`500` |
 | 其他 | `/api/*` | 已鉴权但没有匹配接口时返回 `{"error":"not found"}`；正文方法会先被拒绝。 | `404`、`401`、`405`、`411` |
 
-日志 `tail` 范围为 `1`–`500`，省略或解析失败时默认 `100`，可解析的越界值会限制到该范围；
-无日志返回 `{"lines":[]}`。日志来源是可执行文件目录中 `logs` 下最新的 `PrintHub_*.log`，
-仅读取该文件末尾 64 KiB，并丢弃窗口开头不完整的一行，因此可能少于 N 行；单行超过
-读取窗口且窗口内没有完整行时，可能返回空数组。文件打开、定位或读取失败时返回 `500`。
+日志 `tail` 范围为 `1`–`80`，省略或解析失败时默认 `80`，可解析的越界值会限制到该范围；
+无日志返回 `{"lines":[]}`，返回顺序为从旧到新。前端每次轮询 `/api/logs?tail=80`，
+服务端从进程内内存环形缓冲返回，不读取磁盘日志文件。缓冲只保留本次启动以来最近
+80 条格式化日志，进程或服务重启后清空；可执行文件目录下的 `logs\PrintHub_*.log`
+仍继续写入，用于持久化和排障。内存数据源不受日志文件锁或轮转影响，日志产生后
+下一次轮询即可看到，无需等待刷盘。日志回调异常时返回 `500` 和 JSON `error`。
 API 将日志正文按 UTF-8 输出，无效字节以替换字符显示；现有部分日志消息含系统 ANSI
 代码页（ACP）的打印机名称，在非 UTF-8 系统代码页下可能显示替换字符，不影响打印功能。
-日志读取失败只在日志区域提示，不会把状态正常的服务标记为离线或阻止保存。
+日志请求失败只在日志区域提示，不会把状态正常的服务标记为离线或阻止保存。
 
 `GET /api/printers` 每次请求使用 `EnumPrintersW(PRINTER_ENUM_LOCAL, level 2)` 重新枚举，
 过滤带 `PRINTER_ATTRIBUTE_NETWORK` 的远程连接，保留本地 TCP/IP 端口上的队列。
@@ -197,7 +203,7 @@ API 响应带 `Cache-Control: no-store`，响应带 `X-Content-Type-Options: nos
 ```powershell
 curl.exe -H "X-PrintHub-Token: <token>" http://127.0.0.1:8323/api/status
 curl.exe -X PUT -H "X-PrintHub-Token: <token>" -H "Content-Type: application/json" --data-binary "@config.json" http://127.0.0.1:8323/api/config
-curl.exe -H "X-PrintHub-Token: <token>" "http://127.0.0.1:8323/api/logs?tail=100"
+curl.exe -H "X-PrintHub-Token: <token>" "http://127.0.0.1:8323/api/logs?tail=80"
 curl.exe -H "X-PrintHub-Token: <token>" http://127.0.0.1:8323/api/printers
 ```
 

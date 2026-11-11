@@ -20,7 +20,6 @@ PrintHub 是一个仅支持 Windows 的网络打印服务，可将网络客户�
 每个 ZIP 包均包含：
 
 - `PrintHub.exe`
-- `config.example.json`
 - `LICENSE`
 
 x86 版本以 Windows 7 SP1 x86 为最低目标系统。请仅在受信任网络中部署，并按实际
@@ -29,9 +28,9 @@ x86 版本以 Windows 7 SP1 x86 为最低目标系统。请仅在受信任网络
 ## 快速开始
 
 1. 解压对应架构的发布包。
-2. 将 `config.example.json` 复制为 `config.json`，按
-   [配置文件说明](docs/configuration.md) 编辑。将示例的 `Printer1` 替换为本机实际
-   安装或已连接的 Windows 打印机名称，并设置对应的 LPR 队列名和可选 RAW 端口。
+2. 首次启动时，若默认的 `<exe目录>\config.json`（或 `-c/--config` 指定的文件）
+   不存在，程序会自动创建所需父目录并生成默认配置，`printerMap` 为空。
+   此时没有打印监听器，可先启动 Web 面板，再添加打印机映射。
 3. 在解压目录打开管理员 PowerShell，选择一种 token 方式前台启动。
    显式指定时，将下面的示例替换为自己的 token；长度须为 `16`–`256`，
    字符范围为 `0x21`–`0x7e`（可打印 ASCII，不含空格）：
@@ -62,11 +61,14 @@ x86 版本以 Windows 7 SP1 x86 为最低目标系统。请仅在受信任网络
    .\PrintHub.exe --service start
    ```
 
+   安装时配置文件不存在也允许安装，由首次服务启动自动创建；已存在的文件仍须通过
+   校验。服务运行账户须有创建父目录和写入配置文件的权限。
    前台运行与服务运行择一使用，避免争用打印和 Web 端口。
 5. 在本机浏览器打开 <http://127.0.0.1:8323/>，首次输入本次启动日志中的 token
    （或 `--web-token` 指定的值）。
    面板将 token 保存在当前标签页的 `sessionStorage`，可查看状态卡、实时日志，
-   编辑打印机映射并保存。
+   添加打印机映射并保存即可热应用。也可按[配置文件说明](docs/configuration.md)
+   手工编辑 JSON，填入实际 Windows 打印机名称、LPR 队列名和可选 RAW 端口后重启。
 
 随机模式下，每次服务或进程重启都会更换 token，浏览器需重新输入；需要稳定值时显式
 指定 `--web-token`。两种方式都会在每次启动时将当前 token 写入日志，即使

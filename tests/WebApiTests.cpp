@@ -16,8 +16,6 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
-#include <filesystem>
-#include <fstream>
 #include <functional>
 #include <memory>
 #include <system_error>
@@ -33,50 +31,8 @@ using Json = nlohmann::json;
 constexpr std::string_view kToken = "0123456789abcdef";
 constexpr auto kStatusJson = R"({"version":"test","mode":"console","uptimeSeconds":12})";
 constexpr auto kConfigJson = R"({"ppmDisabled":true,"printerMap":[]})";
+constexpr auto kLogsJson = R"({"lines":["recent line"]})";
 constexpr auto kPrintersJson = R"({"printers":["Microsoft Print to PDF"]})";
-
-class TemporaryDirectory {
-public:
-    TemporaryDirectory() {
-        static std::atomic_uint sequence{0};
-        const auto root = std::filesystem::current_path();
-        for (int attempt = 0; attempt < 64; ++attempt) {
-            auto candidate = root / ("PrintHubWebApiTest-" + std::to_string(GetCurrentProcessId()) + "-" +
-                std::to_string(GetTickCount64()) + "-" + std::to_string(sequence.fetch_add(1)));
-            std::error_code error;
-            if (std::filesystem::create_directory(candidate, error)) {
-                path_ = std::move(candidate);
-                return;
-            }
-            if (error) throw std::runtime_error("Cannot create web test directory: " + error.message());
-        }
-        throw std::runtime_error("Cannot choose a unique web test directory");
-    }
-    ~TemporaryDirectory() {
-        std::error_code ignored;
-        std::filesystem::remove_all(path_, ignored);
-    }
-    TemporaryDirectory(const TemporaryDirectory&) = delete;
-    TemporaryDirectory& operator=(const TemporaryDirectory&) = delete;
-    const std::filesystem::path& path() const { return path_; }
-
-private:
-    std::filesystem::path path_;
-};
-
-void writeFile(const std::filesystem::path& path, std::string_view contents) {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    require(output.is_open(), "Cannot open test file");
-    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-    output.close();
-    require(!output.fail(), "Cannot write test file");
-}
-
-std::string numberedLines(int count) {
-    std::string contents;
-    for (int line = 1; line <= count; ++line) contents += "line " + std::to_string(line) + "\r\n";
-    return contents;
-}
 
 httplib::Headers tokenHeaders() {
     return {{"X-PrintHub-Token", std::string(kToken)}};
@@ -209,15 +165,14 @@ public:
         Options options;
         options.port = 0;
         options.accessToken = kToken;
-        options.logDirectory = directory.path() / "logs";
         options.version = "test";
         options.statusJson = [] { return std::string(kStatusJson); };
         options.configJson = [] { return std::string(kConfigJson); };
+        options.logsJson = [](int) { return std::string(kLogsJson); };
         options.printersJson = [] { return std::string(kPrintersJson); };
         options.applyConfig = [](std::string_view body) {
             return ApplyResponse{200, Json{{"received", std::string(body)}}.dump()};
         };
-        require(std::filesystem::create_directory(options.logDirectory), "Cannot create log directory");
         if (customize) customize(options);
         server = std::make_unique<Server>(std::move(options));
         port = server->Start();
@@ -231,9 +186,6 @@ public:
     ~ServerFixture() {
         if (server) server->Stop();
     }
-    std::filesystem::path logDirectory() const { return directory.path() / "logs"; }
-
-    TemporaryDirectory directory;
     std::uint16_t port = 0;
     std::unique_ptr<Server> server;
     std::unique_ptr<httplib::Client> client;
@@ -368,48 +320,6 @@ void testEarlyRejection() {
     require(calls.load() == 0, "An early rejection reached the apply callback");
 }
 
-void testReadLogLines() {
-    TemporaryDirectory directory;
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 5)) == Json{{"lines", Json::array()}},
-        "Empty log directory must return an empty array");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path() / "missing", 5))["lines"].empty(),
-        "Missing log directory must return an empty array");
-    writeFile(directory.path() / "PrintHub_2026-01-01.log", "old\n");
-    writeFile(directory.path() / "Other_2099-01-01.log", "ignore\n");
-    writeFile(directory.path() / "PrintHub_2099-01-01.txt", "ignore\n");
-    require(std::filesystem::create_directory(directory.path() / "PrintHub_2099-01-02.log"),
-        "Cannot create non-file log entry");
-    const auto latest = directory.path() / "PrintHub_2026-01-02.log";
-    writeFile(latest, numberedLines(6) + "line 7");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 5))["lines"] ==
-        Json::array({"line 3", "line 4", "line 5", "line 6", "line 7"}), "Wrong latest log tail");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 0))["lines"] == Json::array({"line 7"}),
-        "Log tail lower bound must be one");
-    writeFile(latest, numberedLines(550));
-    const auto capped = Json::parse(ReadRecentLogLinesJson(directory.path(), 9999))["lines"];
-    require(capped.size() == 500 && capped.front() == "line 51" && capped.back() == "line 550",
-        "Log tail upper bound must be 500 without a phantom trailing line");
-    writeFile(latest, "first\r\n\r\nlast\r\n");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 10))["lines"] ==
-        Json::array({"first", "", "last"}), "CRLF or empty-line handling changed");
-    writeFile(latest, "bad " + bytes({0xff}) + "\n");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 5))["lines"] ==
-        Json::array({"bad " + bytes({0xef, 0xbf, 0xbd})}), "Malformed UTF-8 was not replaced");
-    writeFile(latest, std::string(70 * 1024, 'x') + "\r\nkept 1\r\nkept 2\n");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 5))["lines"] ==
-        Json::array({"kept 1", "kept 2"}), "Partial first line from the read window was not dropped");
-    writeFile(latest, std::string(70 * 1024, 'x'));
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 5))["lines"].empty(),
-        "A truncated single line must not be returned");
-    const auto completeLine = std::string(64 * 1024 - 5, 'x');
-    writeFile(latest, "prefix\n" + completeLine + "\nlast");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 5))["lines"] ==
-        Json::array({completeLine, "last"}), "Complete line at the 64 KiB boundary was lost");
-    writeFile(latest, "");
-    require(Json::parse(ReadRecentLogLinesJson(directory.path(), 5))["lines"].empty(),
-        "Empty latest log must not fall back to an older file");
-}
-
 void testGetRoutesAndAuthentication() {
     ServerFixture fixture;
     auto& client = *fixture.client;
@@ -460,26 +370,52 @@ void testPrintersRoute() {
     expectError(authenticatedGet(*failing.client, "/api/printers"), 500, "enumeration failed");
 }
 
-void testLogRoute() {
+void testLogsRoute() {
     ServerFixture fixture;
     auto& client = *fixture.client;
-    require(Json::parse(expectResponse(authenticatedGet(client, "/api/logs"), 200).body)["lines"].empty(),
-        "Logs endpoint must handle an empty directory");
-    writeFile(fixture.logDirectory() / "PrintHub_2026-01-02.log", numberedLines(550));
-    const auto lastFive = Json::parse(expectResponse(authenticatedGet(client, "/api/logs?tail=5"), 200).body);
-    require(lastFive["lines"] == Json::array({"line 546", "line 547", "line 548", "line 549", "line 550"}),
-        "Logs endpoint did not return the last five lines");
-    for (const auto* path : {"/api/logs", "/api/logs?tail=invalid", "/api/logs?tail=2junk",
-        "/api/logs?tail=", "/api/logs?tail=2147483648"}) {
-        const auto lines = Json::parse(expectResponse(authenticatedGet(client, path), 200).body)["lines"];
-        require(lines.size() == 100 && lines.front() == "line 451", "Invalid tail must default to 100");
+    expectError(client.Get("/api/logs"), 401, "unauthorized");
+    require(expectResponse(authenticatedGet(client, "/api/logs"), 200).body == kLogsJson,
+        "Logs callback body changed");
+
+    std::atomic<int> receivedTail{-1};
+    std::atomic_uint calls{0};
+    ServerFixture recording([&](Options& options) {
+        options.logsJson = [&](int tail) {
+            receivedTail.store(tail);
+            calls.fetch_add(1);
+            return std::string(kLogsJson);
+        };
+    });
+    expectError(recording.client->Get("/api/logs"), 401, "unauthorized");
+    require(calls.load() == 0, "Unauthenticated logs request invoked the callback");
+    const struct {
+        const char* path;
+        int tail;
+    } cases[]{
+        {"/api/logs", 80},
+        {"/api/logs?tail=0", 1},
+        {"/api/logs?tail=-10", 1},
+        {"/api/logs?tail=999", 80},
+        {"/api/logs?tail=10", 10},
+        {"/api/logs?tail=abc", 80},
+        {"/api/logs?tail=2junk", 80},
+        {"/api/logs?tail=", 80},
+        {"/api/logs?tail=2147483648", 80},
+    };
+    for (const auto& test : cases) {
+        receivedTail.store(-1);
+        const auto before = calls.load();
+        require(expectResponse(authenticatedGet(*recording.client, test.path), 200).body == kLogsJson,
+            "Logs route must return the callback body unchanged");
+        require(receivedTail.load() == test.tail, "Wrong callback tail for " + std::string(test.path));
+        require(calls.load() == before + 1, "Each logs request must invoke the callback exactly once");
     }
-    for (const auto* path : {"/api/logs?tail=0", "/api/logs?tail=-10"}) {
-        require(Json::parse(expectResponse(authenticatedGet(client, path), 200).body)["lines"] ==
-            Json::array({"line 550"}), "Tail lower bound must be one");
-    }
-    const auto capped = Json::parse(expectResponse(authenticatedGet(client, "/api/logs?tail=5000"), 200).body);
-    require(capped["lines"].size() == 500 && capped["lines"].front() == "line 51", "Tail upper bound must be 500");
+
+    ServerFixture failing([](Options& options) {
+        options.logsJson = [](int) -> std::string { throw std::runtime_error("logs failure"); };
+    });
+    expectError(failing.client->Get("/api/logs"), 401, "unauthorized");
+    expectError(authenticatedGet(*failing.client, "/api/logs"), 500, "logs failure");
 }
 
 void testPutRoute() {
@@ -554,10 +490,9 @@ int main() {
         runTest("server lifecycle", testLifecycle);
         runTest("bind failure retry", testBindFailureRetry);
         runTest("early request rejection", testEarlyRejection);
-        runTest("log tail helper", testReadLogLines);
         runTest("GET routes and authentication", testGetRoutesAndAuthentication);
         runTest("printers endpoint", testPrintersRoute);
-        runTest("log endpoint", testLogRoute);
+        runTest("logs endpoint", testLogsRoute);
         runTest("PUT route", testPutRoute);
         runTest("callback exceptions", testCallbackExceptions);
         runTest("payload size limit", testPayloadLimit);
