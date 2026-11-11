@@ -1,0 +1,1302 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="color-scheme" content="light">
+  <title>PrintHub · 配置面板</title>
+  <style>
+    :root {
+      --bg: #f4f6fa; --surface: #fff; --ink: #1c2940; --muted: #66758b;
+      --line: #e3e8f0; --blue: #2563eb; --blue-dark: #1d4ed8; --blue-soft: #edf3ff;
+      --green: #147752; --green-soft: #edf9f3; --amber: #936012; --amber-soft: #fff8e8;
+      --red: #bf3545; --red-soft: #fff1f3; --radius: 14px;
+      --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button, a, input, select, textarea { -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible,
+    textarea:focus-visible, [tabindex]:focus-visible { outline: 3px solid #94b6ff; outline-offset: 3px; }
+    [hidden] { display: none !important; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 27px; line-height: 1.4; letter-spacing: -.5px; }
+    h2 { font-size: 16px; font-weight: 650; }
+    h3 { font-size: 14px; font-weight: 600; }
+    code, .mono { font-family: var(--mono); }
+    .icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+    .svg-library { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .wrap { width: min(1440px, calc(100% - 64px)); margin: 0 auto; }
+    .connection-bar { background: #edf0f5; color: var(--muted); border-bottom: 1px solid var(--line); padding: 9px 0; font-size: 12px; }
+    .connection-bar.connected { background: var(--green-soft); color: var(--green); border-color: #d5eddf; }
+    .connection-bar.offline { background: var(--red-soft); color: var(--red); border-color: #f1d4d9; }
+    .connection-inner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+    .connection-message { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    #connection-detail { overflow-wrap: anywhere; }
+    .connection-bar .btn { min-height: 29px; padding: 4px 9px; }
+    .topbar { position: sticky; top: 0; z-index: 30; background: #fff; border-bottom: 1px solid var(--line); box-shadow: 0 2px 10px #24345108; }
+    .header-inner { min-height: 84px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 16px 0; }
+    .brand, .actions, .row, .section-title, .section-head, .pills { display: flex; align-items: center; }
+    .brand { gap: 12px; flex-shrink: 0; }
+    .brand-mark { width: 43px; height: 43px; border-radius: 12px; background: var(--blue); color: #fff; display: grid; place-items: center; }
+    .brand-mark .icon { width: 25px; height: 25px; }
+    .wordmark { font-size: 23px; letter-spacing: -.7px; font-weight: 700; line-height: 1.25; }
+    .brand-caption { color: var(--muted); font-size: 10px; letter-spacing: 1.4px; margin-top: 2px; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .badge-blue { color: #295ab4; background: var(--blue-soft); border: 1px solid #dce6fc; margin-left: 8px; }
+    .badge-neutral { color: var(--muted); background: #f0f3f7; }
+    .actions { gap: 7px; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 37px; padding: 7px 12px; border: 1px solid #dce2eb; border-radius: 8px; background: #fff; color: #3d4d65; font-size: 12px; font-weight: 600; line-height: 1.5; transition: background .15s, border-color .15s, box-shadow .15s; }
+    .btn:hover { background: #f6f8fc; border-color: #b9c7dc; }
+    .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; box-shadow: 0 2px 4px #2563eb1a; }
+    .btn.primary:hover { background: var(--blue-dark); border-color: var(--blue-dark); }
+    .btn.danger { color: var(--red); }
+    .btn.danger:hover { background: var(--red-soft); border-color: #edc5cc; }
+    .btn.ghost { background: transparent; border-color: transparent; }
+    .btn.ghost:hover { background: #eef3fa; }
+    .btn:disabled { cursor: not-allowed; color: #94a0b3; background: #f0f3f7; border-color: #e3e8f0; box-shadow: none; opacity: .8; }
+    .btn .icon { width: 15px; height: 15px; }
+    .action-divider { width: 1px; height: 23px; background: var(--line); margin: 0 3px; }
+    main { padding: 29px 0 26px; }
+    .page-intro { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 23px; }
+    .page-intro p { color: var(--muted); margin-top: 6px; font-size: 13px; }
+    .local-note { color: var(--muted); font-size: 12px; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 410px; gap: 22px; align-items: start; }
+    .editor { display: grid; gap: 20px; min-width: 0; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 3px 12px #24345104; overflow: hidden; }
+    .card-pad { padding: 23px 25px; }
+    .section-head { justify-content: space-between; gap: 14px; margin-bottom: 20px; }
+    .section-title { gap: 10px; }
+    .section-title > .icon { color: #7185a4; }
+    .section-subtitle { margin: -12px 0 20px; font-size: 12px; color: var(--muted); }
+    .muted { color: var(--muted); }
+    .pills { gap: 7px; flex-wrap: wrap; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .pill.success { color: var(--green); background: var(--green-soft); }
+    .pill.neutral { color: #586a84; background: #f0f3f7; }
+    .pill.error { color: var(--red); background: var(--red-soft); }
+    .pill.warning { color: var(--amber); background: var(--amber-soft); }
+    .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    .metrics { display: grid; grid-template-columns: .65fr 1.55fr 1fr; gap: 20px; margin-bottom: 19px; }
+    .metric-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+    .metric-value { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+    .metric-value.version { font-size: 21px; line-height: 1.2; letter-spacing: -.5px; }
+    .endpoints { display: flex; flex-wrap: wrap; gap: 7px 14px; border-top: 1px solid #edf0f5; padding-top: 15px; color: #5c6d84; font-size: 11px; }
+    .endpoints strong { color: #344660; margin-right: 5px; font-weight: 600; }
+    .endpoints > span { min-width: 0; overflow-wrap: anywhere; }
+    .raw-endpoints { flex-basis: 100%; }
+    .listener-summary { margin-top: 10px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .logs { margin-top: 18px; border: 1px solid #e9edf3; background: #f8fafd; border-radius: 9px; overflow: hidden; }
+    .log-heading { display: flex; justify-content: space-between; padding: 9px 13px; border-bottom: 1px solid #e9edf3; font-size: 11px; color: var(--muted); }
+    .log-lines { padding: 9px 13px; max-height: 240px; overflow: auto; font: 11px/1.95 var(--mono); color: #596b83; }
+    .log-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .log-line.info { color: #247ba6; }
+    .log-line.warn { color: var(--amber); }
+    .log-line.error { color: var(--red); }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 20px; }
+    .field { display: block; min-width: 0; }
+    .field-label { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; margin-bottom: 7px; color: #35465e; font-size: 12px; font-weight: 600; }
+    .field-label code { color: #66768b; font-size: 10px; font-weight: 400; }
+    .required { color: var(--red); font-weight: 400; }
+    input:not([type="checkbox"]):not([type="file"]), select, textarea { width: 100%; min-height: 39px; border: 1px solid #d9e1ed; border-radius: 7px; background: #fff; color: #25344c; padding: 8px 11px; font-size: 12px; line-height: 1.6; transition: border-color .15s, box-shadow .15s; }
+    input:hover, select:hover, textarea:hover { border-color: #a9bbd6; }
+    input:focus, select:focus, textarea:focus { border-color: #6f9bf3; box-shadow: 0 0 0 3px #2563eb0c; }
+    input::placeholder, textarea::placeholder { color: #96a2b3; }
+    textarea { resize: vertical; display: block; max-height: 140px; }
+    textarea.no-resize { resize: none; }
+    input[aria-invalid="true"], textarea[aria-invalid="true"] { border-color: #df7d8a; background: #fffafb; }
+    .field-hint { display: block; font-size: 11px; color: var(--muted); margin-top: 6px; }
+    .switch { display: inline-flex; position: relative; align-items: center; gap: 10px; cursor: pointer; flex-shrink: 0; font-size: 12px; font-weight: 600; }
+    .switch input { position: absolute; left: 0; top: 0; width: 38px; height: 23px; margin: 0; opacity: 0; cursor: pointer; }
+    .switch-track { display: inline-block; width: 38px; height: 23px; border-radius: 20px; background: #a5b0c1; transition: background .15s; }
+    .switch-track::after { content: ""; display: block; width: 17px; height: 17px; margin: 3px; border-radius: 50%; background: white; box-shadow: 0 1px 3px #17203624; transition: transform .15s; }
+    .switch input:checked + .switch-track { background: var(--blue); }
+    .switch input:checked + .switch-track::after { transform: translateX(15px); }
+    .switch input:focus-visible + .switch-track { outline: 3px solid #94b6ff; outline-offset: 3px; }
+    .ppm-box { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 19px; }
+    .ppm-title { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+    .ppm-title p { color: var(--muted); font-size: 11px; margin-top: 3px; }
+    .info-note { color: #59708f; background: #f4f7fc; border-radius: 8px; padding: 11px 13px; font-size: 11px; line-height: 1.8; margin-top: 14px; }
+    .mapping-list { display: grid; gap: 14px; }
+    .mapping { border: 1px solid #e0e7f0; border-radius: 10px; padding: 17px; background: #fff; }
+    .mapping-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+    .mapping-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+    .mapping-number { display: grid; place-items: center; width: 23px; height: 23px; border-radius: 6px; color: #4e75b4; background: #edf3fc; font: 11px var(--mono); }
+    .mapping .btn { min-height: 28px; padding: 4px 7px; font-size: 11px; }
+    .raw-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 15px; margin-top: 16px; border-top: 1px dashed #e3e8f0; }
+    .raw-note { font-size: 11px; color: var(--muted); }
+    .raw-fields { margin-top: 14px; padding: 14px; border-radius: 8px; background: #f8fafd; }
+    .empty { text-align: center; padding: 30px 20px; border: 1px dashed #d7e1ef; border-radius: 10px; background: #fafbfd; }
+    .empty > .icon { width: 30px; height: 30px; color: #879ab6; margin-bottom: 10px; }
+    .empty p { margin-top: 7px; font-size: 12px; color: var(--muted); }
+    .validation-summary { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #d5eddf; border-radius: 9px; background: var(--green-soft); color: var(--green); }
+    .validation-summary.bad { color: var(--red); background: var(--red-soft); border-color: #f1d4d9; }
+    .validation-summary .icon { margin-top: 2px; }
+    .validation-summary p { font-size: 11px; margin-top: 3px; opacity: .9; }
+    .issues { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 7px; }
+    .issue { display: block; width: 100%; border: 1px solid #f0dce0; border-radius: 7px; text-align: left; padding: 10px 12px; color: #9e3443; background: #fffafb; font-size: 12px; overflow-wrap: anywhere; }
+    .issue:hover { background: var(--red-soft); }
+    .issue code { display: block; font-size: 11px; font-weight: 600; margin-bottom: 3px; }
+    .warning-note { background: var(--amber-soft); color: var(--amber); border: 1px solid #f3e4bf; padding: 10px 12px; border-radius: 8px; font-size: 11px; margin-top: 12px; }
+    .feedback { padding: 11px 13px; margin: 0 0 16px; border: 1px solid #f3e4bf; border-radius: 8px; background: var(--amber-soft); color: var(--amber); font-size: 12px; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .feedback.error { background: var(--red-soft); color: var(--red); border-color: #f1d4d9; }
+    .scope-note { font-size: 11px; line-height: 1.8; color: var(--muted); margin-top: 13px; }
+    .preview { position: sticky; top: 106px; min-width: 0; }
+    .preview-header { padding: 21px 21px 16px; }
+    .preview-header .section-head { margin-bottom: 6px; }
+    .preview-header p { font-size: 11px; color: var(--muted); }
+    .preview-toolbar { display: flex; flex-wrap: wrap; gap: 7px; padding: 13px 20px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fafbfd; }
+    .preview-toolbar .btn { font-size: 11px; min-height: 33px; padding: 6px 9px; }
+    .code-label { display: flex; justify-content: space-between; gap: 8px; padding: 13px 20px 4px; color: #7b8ba1; font: 10px var(--mono); }
+    .json-preview { margin: 0; padding: 14px 20px 20px; overflow: auto; max-height: min(650px, calc(100vh - 430px)); min-height: 220px; font: 11.5px/1.9 var(--mono); color: #60708a; tab-size: 2; }
+    .json-key { color: #375d9a; }
+    .json-string { color: #21725b; }
+    .json-number { color: #a15d22; }
+    .json-boolean { color: #7854b5; }
+    .json-null { color: var(--red); }
+    .preview-footer { padding: 15px 20px; border-top: 1px solid var(--line); background: #fafbfd; font-size: 11px; color: var(--muted); line-height: 1.8; }
+    .export-state { display: flex; align-items: center; gap: 7px; color: var(--green); font-weight: 600; margin-bottom: 5px; }
+    .export-state.bad { color: var(--red); }
+    .preview-help { margin-top: 14px; display: flex; align-items: flex-start; gap: 9px; padding: 0 8px; color: #7c8ca2; font-size: 11px; line-height: 1.8; }
+    .preview-help .icon { width: 15px; height: 15px; margin-top: 3px; }
+    .import-feedback { margin: 14px 20px; padding: 10px 12px; background: var(--red-soft); color: var(--red); border-radius: 8px; font-size: 11px; max-height: 180px; overflow: auto; overflow-wrap: anywhere; }
+    .import-feedback ul { margin: 5px 0 0; padding-left: 17px; }
+    .page-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 23px; padding: 16px 0 0; border-top: 1px solid var(--line); color: #7a899e; font-size: 11px; }
+    .toast-region { position: fixed; bottom: 24px; right: 24px; z-index: 10; display: grid; gap: 9px; width: min(440px, calc(100% - 32px)); pointer-events: none; }
+    .toast { display: flex; align-items: flex-start; gap: 10px; border: 1px solid #dbe4f1; border-radius: 10px; padding: 14px 16px; color: #344d72; background: #fff; box-shadow: 0 8px 32px #19355824; font-size: 12px; pointer-events: auto; animation: appear .18s ease-out; }
+    .toast > .icon { color: var(--blue); margin-top: 1px; }
+    .toast.error > .icon { color: var(--red); }
+    .toast span { flex: 1; overflow-wrap: anywhere; }
+    .toast button { border: 0; padding: 0; background: none; color: #8796ab; line-height: 1; }
+    .clipboard-fallback { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    dialog { width: min(460px, calc(100% - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 25px; color: var(--ink); background: var(--surface); box-shadow: 0 18px 70px #19355840; }
+    dialog::backdrop { background: #17263b66; }
+    dialog h2 { margin-bottom: 12px; }
+    dialog p { font-size: 13px; color: var(--muted); margin-bottom: 18px; overflow-wrap: anywhere; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; }
+    #token-error { color: var(--red); margin: 9px 0 0; font-size: 12px; }
+    @keyframes appear { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+    @media (min-width: 1500px) { .layout { grid-template-columns: minmax(0, 1fr) 450px; gap: 26px; } }
+    @media (max-width: 1199px) {
+      .layout { grid-template-columns: minmax(0, 1fr); }
+      .preview { position: static; }
+      .json-preview { max-height: 620px; }
+      .header-inner { flex-wrap: wrap; gap: 15px; }
+      .actions { flex: 1; justify-content: flex-end; }
+    }
+    @media (max-width: 700px) {
+      .wrap { width: calc(100% - 32px); }
+      .header-inner { padding: 17px 0; }
+      .brand { width: 100%; }
+      .actions { justify-content: flex-start; gap: 6px; }
+      .actions .btn { padding: 7px 9px; }
+      .action-divider { display: none; }
+      .page-intro { align-items: flex-start; flex-direction: column; gap: 10px; }
+      h1 { font-size: 24px; }
+      .card-pad { padding: 19px 17px; }
+      .section-head { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+      .metrics { grid-template-columns: .7fr 1.3fr; gap: 17px; }
+      .metrics > :last-child { grid-column: 1 / -1; }
+      .form-grid { grid-template-columns: 1fr; gap: 15px; }
+      .mapping { padding: 14px; }
+      .raw-row { flex-wrap: wrap; }
+      .badge-blue { margin-left: auto; }
+      .toast-region { right: 16px; bottom: 16px; }
+      .ppm-title { align-items: flex-start; }
+      .json-preview { font-size: 11px; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::after { animation: none !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <svg class="svg-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-printer" viewBox="0 0 24 24"><path d="M7 8V3h10v5M7 17H4V8h16v9h-3"/><path d="M7 14h10v7H7zM16 11h1"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M4 3h13l4 4v14H3V3h1M7 3v6h10V3M7 21v-8h10v8"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M15 6.5h3M15 17.5h3"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+    <symbol id="i-network" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="6" rx="1"/><rect x="2" y="16" width="6" height="6" rx="1"/><rect x="16" y="16" width="6" height="6" rx="1"/><path d="M12 8v4M5 16v-4h14v4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m7 7-5 5 5 5M17 7l5 5-5 5M14 4l-4 16"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3m-5 5 5-5 5 5M4 15v6h16v-6"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m7 4 14 8-14 8z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="1"/></symbol>
+    <symbol id="i-restart" viewBox="0 0 24 24"><path d="M20 7v5h-5M20 12a8 8 0 1 0-2 5M20 12l-4-5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 2 8 3v7c0 5-8 10-8 10S4 17 4 12V5z"/><path d="m8 12 3 3 5-6"/></symbol>
+  </svg>
+  <div class="connection-bar connecting" id="connection-bar">
+    <div class="wrap connection-inner">
+      <div class="connection-message" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><strong id="connection-label">正在连接</strong><span id="connection-detail"></span></div>
+      <button class="btn" id="enter-token" type="button" hidden>输入访问令牌</button>
+    </div>
+  </div>
+  <header class="topbar">
+    <div class="wrap header-inner">
+      <div class="brand">
+        <div class="brand-mark"><svg class="icon" aria-hidden="true"><use href="#i-printer"/></svg></div>
+        <div><div class="wordmark">PrintHub</div><div class="brand-caption">PRINT SERVICE</div></div>
+        <span class="badge badge-blue">配置面板</span>
+      </div>
+      <nav class="actions" aria-label="配置操作">
+        <button class="btn primary" type="button" id="save-config"><svg class="icon" aria-hidden="true"><use href="#i-save"/></svg>保存配置</button>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="page-intro">
+      <div><h1>服务配置</h1><p>管理打印机映射与监听端点，让每一次打印各就其位。</p></div>
+      <div class="local-note"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><span id="config-notice">等待读取服务配置</span><span class="pill warning" id="dirty-badge" hidden>未保存的修改</span></div>
+    </div>
+    <div class="layout">
+      <form class="editor" id="config-form" novalidate aria-label="PrintHub 配置">
+        <section class="card card-pad" aria-labelledby="status-heading">
+          <div class="section-head">
+            <div class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-server"/></svg><h2 id="status-heading">运行状态</h2><span class="badge badge-neutral" id="status-badge">连接中</span></div>
+            <div class="pills" id="service-pills"><span class="pill neutral">等待获取状态</span></div>
+          </div>
+          <div class="feedback" id="apply-feedback" role="status" hidden></div>
+          <div class="metrics">
+            <div><div class="metric-label">当前版本</div><div class="metric-value version" id="runtime-version">—</div></div>
+            <div><div class="metric-label">配置文件路径</div><div class="metric-value mono" id="runtime-config-path">—</div></div>
+            <div><div class="metric-label">运行时长</div><div class="metric-value" id="runtime-uptime">—</div></div>
+          </div>
+          <div class="endpoints" aria-label="监听摘要">
+            <span><strong>LPD</strong><code id="lpd-endpoint">—</code> <span id="lpd-state"></span></span>
+            <span><strong>PPM</strong><code id="ppm-endpoint">—</code> <span id="ppm-state"></span></span>
+            <span class="raw-endpoints"><strong>RAW</strong><span id="raw-summary">—</span></span>
+          </div>
+          <p class="listener-summary" id="listener-summary">等待获取监听器信息</p>
+          <div class="logs">
+            <div class="log-heading"><span>最近日志</span><span id="log-meta">等待获取</span></div>
+            <div class="log-lines" id="log-lines" tabindex="0" aria-label="最近日志">等待获取日志</div>
+          </div>
+        </section>
+        <section class="card card-pad" aria-labelledby="global-heading">
+          <div class="section-head"><div class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-sliders"/></svg><h2 id="global-heading">全局设置</h2></div><span class="badge badge-neutral">基础配置</span></div>
+          <div class="form-grid">
+            <label class="field" for="logLevel"><span class="field-label">日志级别 <code>logLevel</code></span>
+              <select id="logLevel" data-path="logLevel"><option value="trace">trace · 跟踪</option><option value="debug">debug · 调试</option><option value="info">info · 信息（默认）</option><option value="warn">warn · 警告</option><option value="error">error · 错误</option><option value="critical">critical · 严重</option><option value="off">off · 关闭</option></select>
+              <span class="field-hint">控制服务写入日志的最低级别。</span>
+            </label>
+            <label class="field" for="maxPendingClients"><span class="field-label">等待客户端上限 <code>maxPendingClients</code></span>
+              <input id="maxPendingClients" data-path="maxPendingClients" type="number" min="1" max="65535" step="1" required inputmode="numeric"><span class="field-hint">每个监听器独立计数；默认 256。</span>
+            </label>
+            <label class="field" for="raw-threads"><span class="field-label">RAW 最小线程数 <code>minThreads.raw</code></span>
+              <input id="raw-threads" data-path="minThreads.raw" type="number" min="1" max="65535" step="1" required inputmode="numeric"><span class="field-hint">1–65535，默认 1。</span>
+            </label>
+            <label class="field" for="lpd-threads"><span class="field-label">LPD 最小线程数 <code>minThreads.lpd</code></span>
+              <input id="lpd-threads" data-path="minThreads.lpd" type="number" min="1" max="65535" step="1" required inputmode="numeric"><span class="field-hint">1–65535，默认 1。</span>
+            </label>
+          </div>
+          <div class="ppm-box">
+            <div class="ppm-title">
+              <div><h3>SNMP PPM 自动发现</h3><p>向 Windows 客户端公布打印机与端口目录。</p></div>
+              <label class="switch"><input id="ppm-switch" type="checkbox" role="switch" aria-label="启用 PPM 自动发现" aria-describedby="ppm-help"><span class="switch-track" aria-hidden="true"></span><span id="ppm-label">已启用</span></label>
+            </div>
+            <p class="info-note" id="ppm-help">PPM 默认开启（ppmDisabled = false）。启用时，所有监听器须共用同一监听地址；LPR 队列须为 1–32 个可打印 ASCII 字符（0x21–0x7e，不含空白和 =）。</p>
+          </div>
+        </section>
+        <section class="card card-pad" aria-labelledby="lpd-heading">
+          <div class="section-head"><div class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-network"/></svg><h2 id="lpd-heading">LPD 服务</h2></div><span class="badge badge-neutral">TCP</span></div>
+          <div class="form-grid">
+            <label class="field" for="lpd-address"><span class="field-label">监听地址 <code>lpdServer.listenAddress</code></span>
+              <input id="lpd-address" data-path="lpdServer.listenAddress" type="text" spellcheck="false" required placeholder="0.0.0.0" autocomplete="off"><span class="field-hint">IPv4；0.0.0.0 表示所有 IPv4 接口。</span>
+            </label>
+            <label class="field" for="lpd-port"><span class="field-label">监听端口 <code>lpdServer.port</code></span>
+              <input id="lpd-port" data-path="lpdServer.port" type="number" min="1" max="65535" step="1" required inputmode="numeric"><span class="field-hint">默认 515；无映射时不会启动 LPD。</span>
+            </label>
+          </div>
+        </section>
+        <section class="card card-pad" aria-labelledby="mappings-heading">
+          <div class="section-head"><div class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-printer"/></svg><h2 id="mappings-heading">打印机映射</h2><span class="badge badge-neutral" id="mapping-count">—</span></div>
+            <button class="btn" id="add-mapping" type="button"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>添加映射</button>
+          </div>
+          <p class="section-subtitle">每条映射提供一个 LPR 队列，可按需开启独立 RAW 端口。</p>
+          <div class="mapping-list" id="mapping-list"></div>
+          <datalist id="installed-printers"></datalist>
+        </section>
+        <section class="card card-pad" aria-labelledby="validation-heading">
+          <div class="section-head"><div class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg><h2 id="validation-heading" tabindex="-1">校验结果</h2></div><span class="badge badge-neutral">实时检查</span></div>
+          <div class="feedback error" id="server-error" role="alert" hidden></div>
+          <div id="validation-summary" class="validation-summary" role="status" aria-live="polite"></div>
+          <ul class="issues" id="validation-errors" aria-label="配置错误"></ul>
+          <div id="validation-warnings"></div>
+        </section>
+      </form>
+      <aside class="preview" aria-labelledby="preview-heading">
+        <section class="card">
+          <div class="preview-header">
+            <div class="section-head"><div class="section-title"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg><h2 id="preview-heading">JSON 预览</h2></div><span class="pill success" id="preview-badge"><span class="dot"></span>有效配置</span></div>
+            <p>表单修改实时同步至预览，保存后应用到服务。</p>
+          </div>
+          <div class="preview-toolbar">
+            <button class="btn" id="copy-json" type="button" aria-describedby="export-hint"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>复制 JSON</button>
+            <button class="btn" id="download-json" type="button" aria-describedby="export-hint"><svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>下载 config.json</button>
+            <button class="btn ghost" id="import-json" type="button"><svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>导入</button>
+            <input id="import-file" type="file" accept=".json,application/json" hidden aria-label="导入 JSON 文件">
+          </div>
+          <div class="import-feedback" id="import-feedback" role="status" hidden></div>
+          <div class="code-label"><span>config.json</span><span id="json-meta">UTF-8 · 2 空格</span></div>
+          <pre class="json-preview" id="json-scroll" tabindex="0" aria-label="实时 JSON 配置预览"><code id="json-preview"></code></pre>
+          <div class="preview-footer">
+            <div class="export-state" id="export-state"><span class="dot"></span><span id="export-hint">校验通过，可以复制或下载</span></div>
+            <p>下载仅生成本地文件。点击「保存配置」可立即应用。</p>
+          </div>
+        </section>
+        <div class="preview-help"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><p>导入支持 UTF-8（可带 BOM），最大 1 MiB。未知字段、类型或配置规则不符时，保留当前草稿。省略可选字段会补齐后端默认值。</p></div>
+      </aside>
+    </div>
+    <footer class="page-footer"><span id="footer-version">PrintHub · Windows 打印服务</span><span>数据来自本机服务</span></footer>
+  </main>
+  <dialog id="confirm-apply" aria-labelledby="confirm-title" aria-describedby="confirm-description">
+    <h2 id="confirm-title">应用配置</h2>
+    <p id="confirm-description">应用配置会中断当前正在进行的打印连接，是否继续？</p>
+    <div class="dialog-actions"><button class="btn" id="cancel-apply" type="button" autofocus>取消</button><button class="btn primary" id="apply-config" type="button">应用</button></div>
+  </dialog>
+  <dialog id="token-dialog" aria-labelledby="token-title" aria-describedby="token-description">
+    <form id="token-form" novalidate>
+      <h2 id="token-title">需要访问令牌</h2>
+      <p id="token-description">请输入服务启动日志中打印的访问令牌（或启动参数 --web-token 指定的值）。</p>
+      <label class="field" for="token-input"><span class="field-label">访问令牌</span><input id="token-input" type="password" autocomplete="off" spellcheck="false" minlength="16" maxlength="256" required aria-describedby="token-error" autofocus></label>
+      <p id="token-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="btn" id="cancel-token" type="button">取消</button><button class="btn primary" type="submit">继续</button></div>
+    </form>
+  </dialog>
+  <div class="toast-region" id="toast-region" role="status" aria-live="polite" aria-atomic="false"></div>
+  <noscript><p class="wrap warning-note">请启用 JavaScript 以连接服务、编辑和校验配置。</p></noscript>
+  <script>
+    'use strict';
+    // 1. Data model. UI-only state never enters the serialized configuration.
+    const LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'critical', 'off'];
+    const MAX_BYTES = 1048576;
+    const TOKEN_KEY = 'printhub-web-token';
+    const $ = selector => document.querySelector(selector);
+    const $$ = selector => Array.from(document.querySelectorAll(selector));
+    const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+    const asciiLower = value => value.replace(/[A-Z]/g, letter => letter.toLowerCase());
+    function defaultConfiguration() {
+      return {
+        logLevel: 'info', maxPendingClients: 256,
+        lpdServer: { listenAddress: '0.0.0.0', port: 515 },
+        minThreads: { raw: 1, lpd: 1 }, printerMap: [], ppmDisabled: false
+      };
+    }
+    const state = {
+      config: defaultConfiguration(), errors: [], rawCache: new WeakMap(),
+      token: '', authEpoch: 0, refreshVersion: 0, connection: 'connecting',
+      configLoaded: false, dirty: false, editVersion: 0,
+      saving: false, importing: false, initializing: false,
+      status: null, logs: null, logError: '', printers: [], printersLoadedAt: 0
+    };
+    let pollTimer = null;
+    let refreshTask = null;
+    let printersTask = null;
+    let initialization = null;
+    function pathParts(path) { return path.match(/[^.[\]]+/g); }
+    function getField(path) { return pathParts(path).reduce((value, key) => value[key], state.config); }
+    function setField(path, value) {
+      const parts = pathParts(path);
+      const key = parts.pop();
+      const parent = parts.reduce((object, part) => object[part], state.config);
+      parent[key] = value;
+    }
+    // 2. Serialization. Explicit construction preserves backend field order and trailing LF.
+    function serializeConfiguration(config) {
+      const result = {
+        logLevel: config.logLevel, maxPendingClients: config.maxPendingClients,
+        lpdServer: { listenAddress: config.lpdServer.listenAddress, port: config.lpdServer.port },
+        minThreads: { raw: config.minThreads.raw, lpd: config.minThreads.lpd },
+        printerMap: config.printerMap.map(mapping => {
+          const item = { name: mapping.name, lprQueue: mapping.lprQueue };
+          if (mapping.rawServer) item.rawServer = {
+            listenAddress: mapping.rawServer.listenAddress, port: mapping.rawServer.port
+          };
+          return item;
+        }),
+        ppmDisabled: config.ppmDisabled
+      };
+      return JSON.stringify(result, null, 2) + '\n';
+    }
+    // 3. Pure validation. IPv4 is decimal, including segments with leading zeroes.
+    function normalizeIpv4(value) {
+      if (typeof value !== 'string' || !/^(?:[0-9]+\.){3}[0-9]+$/.test(value)) return null;
+      const parts = value.split('.').map(Number);
+      return parts.every(part => part >= 0 && part <= 255) ? parts.join('.') : null;
+    }
+    function isCount(value) { return Number.isInteger(value) && value >= 1 && value <= 65535; }
+    function hasInvalidUnicode(value) {
+      for (let index = 0; index < value.length; index++) {
+        const unit = value.charCodeAt(index);
+        if (unit >= 0xd800 && unit <= 0xdbff) {
+          const next = value.charCodeAt(++index);
+          if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+        } else if (unit >= 0xdc00 && unit <= 0xdfff) return true;
+      }
+      return false;
+    }
+    function validateConfiguration(config) {
+      const errors = [];
+      const add = (path, message) => errors.push({ path, message });
+      const text = (value, path) => {
+        if (typeof value !== 'string' || value.length === 0) { add(path, '必填，必须是非空字符串。'); return false; }
+        if (value.includes('\0')) { add(path, '不允许内嵌 NUL 字符（\\u0000）。'); return false; }
+        if (hasInvalidUnicode(value)) { add(path, '包含无效 Unicode 字符，无法编码为合法 UTF-8。'); return false; }
+        return true;
+      };
+      const count = (value, path) => {
+        if (!isCount(value)) add(path, '必须是 1–65535 的整数，不能留空。');
+      };
+      const address = (value, path) => {
+        if (!text(value, path)) return null;
+        const normalized = normalizeIpv4(value);
+        if (normalized === null) add(path, '必须是四段十进制 IPv4，每段 0–255；允许前导零。');
+        return normalized;
+      };
+      if (text(config.logLevel, 'logLevel') && !LEVELS.includes(config.logLevel)) {
+        add('logLevel', '日志级别必须为 trace / debug / info / warn / error / critical / off。');
+      }
+      count(config.maxPendingClients, 'maxPendingClients');
+      count(config.minThreads.raw, 'minThreads.raw');
+      count(config.minThreads.lpd, 'minThreads.lpd');
+      count(config.lpdServer.port, 'lpdServer.port');
+      if (typeof config.ppmDisabled !== 'boolean') add('ppmDisabled', '必须是布尔值。');
+      const lpdAddress = address(config.lpdServer.listenAddress, 'lpdServer.listenAddress');
+      const ppmEnabled = config.ppmDisabled === false;
+      const hasMappings = config.printerMap.length > 0;
+      if (ppmEnabled && hasMappings && isCount(config.lpdServer.port) && config.lpdServer.port !== 515) {
+        add('lpdServer.port', 'PPM 启用且有打印机映射时，LPD 端口必须为 515。');
+      }
+      const queues = new Map();
+      const rawEndpoints = new Map();
+      const ports = new Map();
+      function registerListener(ip, port, path, raw) {
+        if (ip === null || !isCount(port)) return;
+        const endpoint = ip + ':' + port;
+        const duplicate = raw && rawEndpoints.get(endpoint);
+        if (duplicate) add(path + '.port', 'RAW 端点重复：' + endpoint + '，与 ' + duplicate + ' 相同。');
+        if (raw && !duplicate) rawEndpoints.set(endpoint, path);
+        const group = ports.get(port) || { addresses: new Map(), first: null };
+        const conflict = group.addresses.get(ip) || group.addresses.get('0.0.0.0') ||
+          (ip === '0.0.0.0' ? group.first : null);
+        if (conflict && !duplicate) {
+          add(path + '.port', '监听冲突：' + endpoint + ' 与 ' + conflict.path + '（' +
+            conflict.ip + ':' + port + '）地址相同或包含通配地址。');
+        }
+        const listener = { ip, path };
+        if (!group.first) group.first = listener;
+        if (!group.addresses.has(ip)) group.addresses.set(ip, listener);
+        ports.set(port, group);
+      }
+      if (hasMappings) registerListener(lpdAddress, config.lpdServer.port, 'lpdServer', false);
+      config.printerMap.forEach((mapping, index) => {
+        const base = 'printerMap[' + index + ']';
+        text(mapping.name, base + '.name');
+        const queue = mapping.lprQueue;
+        if (text(queue, base + '.lprQueue')) {
+          if (/[\r\n]/.test(queue)) add(base + '.lprQueue', 'LPR 队列名禁止包含 CR 或 LF 换行符。');
+          const key = asciiLower(queue);
+          if (queues.has(key)) add(base + '.lprQueue', '队列名与 ' + queues.get(key) + ' 重复（ASCII 字母大小写不敏感）。');
+          else queues.set(key, base + '.lprQueue');
+          if (ppmEnabled && !/^[\x21-\x3c\x3e-\x7e]{1,32}$/.test(queue)) {
+            add(base + '.lprQueue', 'PPM 要求 1–32 个可打印 ASCII 字符（0x21–0x7e），不含空白及 =。');
+          }
+        }
+        if (!mapping.rawServer) return;
+        const rawPath = base + '.rawServer';
+        const raw = mapping.rawServer;
+        const ip = address(raw.listenAddress, rawPath + '.listenAddress');
+        count(raw.port, rawPath + '.port');
+        registerListener(ip, raw.port, rawPath, true);
+        if (ppmEnabled && ip !== null && lpdAddress !== null && ip !== lpdAddress) {
+          add(rawPath + '.listenAddress', 'PPM 要求与 lpdServer.listenAddress 使用同一归一化地址；通配地址不能与具体地址混用。');
+        }
+      });
+      if (new TextEncoder().encode(serializeConfiguration(config)).length > MAX_BYTES) {
+        add('$', '序列化后的配置超过 1 MiB，请缩减配置内容。');
+      }
+      return errors;
+    }
+    // 4. Strict, transactional import. Nothing is committed until every check passes.
+    function importError(path, message) {
+      const error = new Error(message);
+      error.issues = [{ path, message }];
+      throw error;
+    }
+    function checkObject(value, path, allowed) {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        importError(path || '$', '必须是 JSON 对象。');
+      }
+      Object.keys(value).forEach(key => {
+        if (!allowed.includes(key)) importError(path ? path + '.' + key : key, '未知字段。');
+      });
+      return value;
+    }
+    function readTyped(object, key, fallback, type, path, required) {
+      if (!own(object, key)) {
+        if (required) importError(path, '缺少必填字段。');
+        return fallback;
+      }
+      const value = object[key];
+      const valid = type === 'integer' ? Number.isInteger(value) :
+        type === 'array' ? Array.isArray(value) : typeof value === type && value !== null;
+      if (!valid) importError(path, '类型错误，应为' + ({
+        string: '字符串', integer: '整数（不能是字符串、浮点数或指数形式）',
+        boolean: '布尔值', array: '数组'
+      })[type] + '。');
+      return value;
+    }
+    function readServer(source, path, defaultPort) {
+      checkObject(source, path, ['listenAddress', 'port']);
+      return {
+        listenAddress: readTyped(source, 'listenAddress', '0.0.0.0', 'string', path + '.listenAddress'),
+        port: readTyped(source, 'port', defaultPort, 'integer', path + '.port')
+      };
+    }
+    function parseConfiguration(source) {
+      const text = source.replace(/^\uFEFF/, '');
+      let root = JSON.parse(text);
+      // JSON.parse collapses 515.0 / 5.15e2 into integers. Replace only numeric tokens
+      // (never quoted strings) with null so strict field typing rejects those forms.
+      // Parsing again preserves JSON's last-key-wins behavior for duplicate members.
+      const strictNumbers = text.replace(/"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g, token => {
+        return token[0] !== '"' && /[.eE]/.test(token) ? 'null' : token;
+      });
+      if (strictNumbers !== text) root = JSON.parse(strictNumbers);
+      checkObject(root, '', ['logLevel', 'maxPendingClients', 'lpdServer', 'minThreads', 'printerMap', 'ppmDisabled']);
+      const defaults = defaultConfiguration();
+      const threads = own(root, 'minThreads') ? root.minThreads : {};
+      checkObject(threads, 'minThreads', ['raw', 'lpd']);
+      const mappings = readTyped(root, 'printerMap', [], 'array', 'printerMap');
+      const config = {
+        logLevel: asciiLower(readTyped(root, 'logLevel', defaults.logLevel, 'string', 'logLevel')),
+        maxPendingClients: readTyped(root, 'maxPendingClients', 256, 'integer', 'maxPendingClients'),
+        lpdServer: readServer(own(root, 'lpdServer') ? root.lpdServer : {}, 'lpdServer', 515),
+        minThreads: {
+          raw: readTyped(threads, 'raw', 1, 'integer', 'minThreads.raw'),
+          lpd: readTyped(threads, 'lpd', 1, 'integer', 'minThreads.lpd')
+        },
+        printerMap: mappings.map((item, index) => {
+          const path = 'printerMap[' + index + ']';
+          checkObject(item, path, ['name', 'lprQueue', 'rawServer']);
+          const mapping = {
+            name: readTyped(item, 'name', '', 'string', path + '.name', true),
+            lprQueue: readTyped(item, 'lprQueue', '', 'string', path + '.lprQueue', true)
+          };
+          if (own(item, 'rawServer')) mapping.rawServer = readServer(item.rawServer, path + '.rawServer', 9100);
+          return mapping;
+        }),
+        ppmDisabled: readTyped(root, 'ppmDisabled', false, 'boolean', 'ppmDisabled')
+      };
+      const issues = validateConfiguration(config);
+      if (issues.length) {
+        const error = new Error('配置规则校验失败。');
+        error.issues = issues;
+        throw error;
+      }
+      return config;
+    }
+    // 5. Rendering. User strings are escaped; inputs are not recreated on keystrokes.
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[character]);
+    }
+    function icon(name) { return '<svg class="icon" aria-hidden="true"><use href="#i-' + name + '"/></svg>'; }
+    function updateHtml(element, html) { if (element.innerHTML !== html) element.innerHTML = html; }
+    function fieldMarkup(index, key, label, kind, placeholder) {
+      const path = 'printerMap[' + index + '].' + key;
+      const id = 'map-' + index + '-' + key.replace(/\./g, '-');
+      const value = getField(path);
+      const attributes = ' id="' + id + '" data-path="' + path + '" required spellcheck="false"' +
+        (kind === 'printer' ? '' : ' autocomplete="off"');
+      let control;
+      if (kind === 'printer') {
+        control = '<input type="text" list="installed-printers"' + attributes + ' value="' +
+          escapeHtml(value) + '" placeholder="' + escapeHtml(placeholder) + '">';
+      } else if (kind === 'textarea' || kind === 'queue') {
+        control = '<textarea rows="1"' + (kind === 'queue' ? ' class="no-resize"' : '') + attributes +
+          ' placeholder="' + escapeHtml(placeholder) + '">' + escapeHtml(value) + '</textarea>';
+      } else {
+        control = '<input' + attributes + ' type="' + kind + '" value="' + escapeHtml(value === null ? '' : value) + '"' +
+          (kind === 'number' ? ' min="1" max="65535" step="1" inputmode="numeric"' : ' placeholder="0.0.0.0"') + '>';
+      }
+      return '<label class="field" for="' + id + '"><span class="field-label">' + label +
+        ' <span class="required" aria-hidden="true">*</span><code>' + key + '</code></span>' + control + '</label>';
+    }
+    function sizeTextarea(element) {
+      element.style.height = 'auto';
+      element.style.height = Math.min(140, Math.max(39, element.scrollHeight + 2)) + 'px';
+    }
+    function renderMappings() {
+      $('#mapping-count').textContent = state.config.printerMap.length + ' 条';
+      $('#mapping-list').innerHTML = state.config.printerMap.length ? state.config.printerMap.map((mapping, index) => {
+        const raw = !!mapping.rawServer;
+        return '<article class="mapping" aria-label="打印机映射 ' + (index + 1) + '">' +
+          '<div class="mapping-header"><div class="mapping-label"><span class="mapping-number">' +
+          String(index + 1).padStart(2, '0') + '</span>打印机映射<span class="pill neutral">' +
+          (raw ? 'LPR + RAW' : '仅 LPR') + '</span></div>' +
+          '<button class="btn ghost danger" type="button" data-remove="' + index + '" aria-label="删除映射 ' +
+          (index + 1) + '">' + icon('trash') + '删除</button></div><div class="form-grid">' +
+          fieldMarkup(index, 'name', 'Windows 打印机名称', 'printer', '选择或输入本机已安装的打印机队列') +
+          fieldMarkup(index, 'lprQueue', 'LPR 队列名', 'queue', '输入 LPR 队列名称') + '</div>' +
+          '<div class="raw-row"><label class="switch"><input type="checkbox" role="switch" data-raw-index="' +
+          index + '" aria-label="映射 ' + (index + 1) + ' 启用 RAW"' + (raw ? ' checked' : '') +
+          '><span class="switch-track" aria-hidden="true"></span>RAW 直连</label>' +
+          '<span class="raw-note">' + (raw ? '独立 TCP 监听端点' : '未启用 · 仅提供 LPR 队列') + '</span></div>' +
+          '<div class="raw-fields form-grid"' + (raw ? '' : ' hidden') + '>' +
+          (raw ? fieldMarkup(index, 'rawServer.listenAddress', 'RAW 监听地址', 'text', '') +
+            fieldMarkup(index, 'rawServer.port', 'RAW 端口', 'number', '') : '') + '</div></article>';
+      }).join('') : '<div class="empty">' + icon('printer') + '<h3>尚未添加打印机映射</h3>' +
+        '<p>printerMap 为空时进程仍可启动，但不会启动任何打印监听器</p></div>';
+      $$('#mapping-list textarea').forEach(sizeTextarea);
+    }
+    function renderPrinterOptions() {
+      const options = document.createDocumentFragment();
+      state.printers.forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        options.appendChild(option);
+      });
+      $('#installed-printers').replaceChildren(options);
+    }
+    function highlightJson(json) {
+      return json.replace(/"(?:\\.|[^"\\])*"(?:\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g, token => {
+        const kind = token[0] === '"' ? (token.endsWith(':') ? 'key' : 'string') :
+          token === 'null' ? 'null' : /^(true|false)$/.test(token) ? 'boolean' : 'number';
+        return '<span class="json-' + kind + '">' + escapeHtml(token) + '</span>';
+      });
+    }
+    function renderValidation() {
+      const valid = state.errors.length === 0;
+      const summary = $('#validation-summary');
+      summary.className = 'validation-summary' + (valid ? '' : ' bad');
+      updateHtml(summary, icon(valid ? 'check' : 'info') + '<div><h3>' +
+        (valid ? '配置规则校验通过' : '发现 ' + state.errors.length + ' 项配置错误') +
+        '</h3><p>' + (valid ? '字段、队列与监听端点均符合配置规则。' : '请修正以下字段后再保存、复制或下载；点击错误可定位字段。') + '</p></div>');
+      updateHtml($('#validation-errors'), state.errors.map(issue => '<li><button type="button" class="issue" data-error-path="' +
+        escapeHtml(issue.path) + '"><code>' + escapeHtml(issue.path) + '</code>' + escapeHtml(issue.message) + '</button></li>').join(''));
+      updateHtml($('#validation-warnings'), state.config.printerMap.length ? '' :
+        '<p class="warning-note">printerMap 为空时进程仍可启动，但不会启动任何打印监听器；PPM 也会跳过。</p>');
+      $$('#config-form [data-path]').forEach(control => {
+        const issue = state.errors.find(error => error.path === control.dataset.path);
+        control.setAttribute('aria-invalid', String(!!issue));
+        if (issue) control.title = issue.message;
+        else control.removeAttribute('title');
+      });
+    }
+    function refresh() {
+      state.errors = validateConfiguration(state.config);
+      const valid = state.errors.length === 0;
+      renderValidation();
+      const json = serializeConfiguration(state.config);
+      updateHtml($('#json-preview'), highlightJson(json));
+      $('#json-meta').textContent = 'UTF-8 · ' + json.trimEnd().split('\n').length + ' 行 · 2 空格';
+      $('#preview-badge').className = 'pill ' + (valid ? 'success' : 'error');
+      updateHtml($('#preview-badge'), '<span class="dot"></span>' + (valid ? '有效配置' : state.errors.length + ' 项错误'));
+      $('#export-state').className = 'export-state' + (valid ? '' : ' bad');
+      $('#export-hint').textContent = valid ? '校验通过，可以复制或下载' : '请先修正错误；当前 JSON 仅为草稿预览';
+      ['#copy-json', '#download-json'].forEach(selector => {
+        $(selector).disabled = !valid;
+        $(selector).title = valid ? '' : '请先修正配置错误';
+      });
+      $('#ppm-label').textContent = state.config.ppmDisabled ? '已关闭' : '已启用';
+    }
+    function populateForm() {
+      $$('#config-form [data-path]').filter(control => !control.closest('#mapping-list')).forEach(control => {
+        control.value = getField(control.dataset.path);
+      });
+      $('#ppm-switch').checked = !state.config.ppmDisabled;
+      renderMappings();
+      refresh();
+      updateControls();
+    }
+    function toast(message, error) {
+      const item = document.createElement('div');
+      item.className = 'toast' + (error ? ' error' : '');
+      item.innerHTML = icon(error ? 'info' : 'check') + '<span>' + escapeHtml(message) +
+        '</span><button type="button" aria-label="关闭提示">' + icon('close') + '</button>';
+      item.querySelector('button').addEventListener('click', () => item.remove());
+      const region = $('#toast-region');
+      while (region.children.length >= 3) region.firstElementChild.remove();
+      region.appendChild(item);
+      setTimeout(() => item.remove(), error ? 10000 : 5500);
+    }
+    // 6. Authenticated API access. An auth epoch prevents old requests changing a new session.
+    class ApiError extends Error {
+      constructor(message, status = 0, data = null, kind = 'http') {
+        super(message);
+        this.name = 'ApiError';
+        this.status = status;
+        this.data = data;
+        this.kind = kind;
+      }
+    }
+    function persistToken(token) {
+      try {
+        if (token) sessionStorage.setItem(TOKEN_KEY, token);
+        else sessionStorage.removeItem(TOKEN_KEY);
+      } catch (error) {
+        if (token) toast('浏览器无法保存访问令牌，当前页面仍可使用。', true);
+      }
+    }
+    function initialToken() {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('token')) {
+        const token = url.searchParams.get('token') || '';
+        url.searchParams.delete('token');
+        try { history.replaceState(history.state, '', url.href); }
+        catch (error) { toast('无法从地址栏移除访问令牌，请手动删除 token 查询参数。', true); }
+        persistToken(token);
+        return token;
+      }
+      try { return sessionStorage.getItem(TOKEN_KEY) || ''; }
+      catch (error) { return ''; }
+    }
+    function showDialog(selector) {
+      const dialog = $(selector);
+      if (dialog.hasAttribute('open')) return;
+      if (typeof dialog.showModal === 'function') dialog.showModal();
+      else dialog.setAttribute('open', '');
+    }
+    function closeDialog(selector) {
+      const dialog = $(selector);
+      if (!dialog.hasAttribute('open')) return;
+      if (typeof dialog.close === 'function') dialog.close();
+      else dialog.removeAttribute('open');
+    }
+    function showTokenDialog(message = '') {
+      closeDialog('#confirm-apply');
+      $('#token-error').textContent = message;
+      $('#token-error').hidden = !message;
+      $('#token-input').setAttribute('aria-invalid', String(!!message));
+      showDialog('#token-dialog');
+      $('#token-input').focus({ preventScroll: true });
+    }
+    function unauthorized() {
+      const hadToken = !!state.token;
+      state.token = '';
+      state.authEpoch++;
+      state.initializing = false;
+      state.status = null;
+      state.logs = null;
+      state.logError = '';
+      persistToken('');
+      stopPolling();
+      setConnection('offline', '需要访问令牌');
+      updateControls();
+      showTokenDialog(hadToken ? '令牌无效，请重试' : '');
+    }
+    async function api(path, options = {}) {
+      const epoch = state.authEpoch;
+      const version = state.refreshVersion;
+      const headers = new Headers(options.headers);
+      // Malformed URL/storage tokens must still reach the server as an unauthorized request.
+      headers.set('X-PrintHub-Token', /^[\x21-\x7e]{16,256}$/.test(state.token) ? state.token : '');
+      headers.set('Content-Type', 'application/json');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), options.method === 'PUT' ? 120000 : 15000);
+      let response, text;
+      try {
+        response = await fetch(path, {
+          ...options, headers, signal: controller.signal, cache: 'no-store',
+          credentials: 'same-origin', redirect: 'error'
+        });
+        text = response.status === 401 ? '' : await response.text();
+      } catch (error) {
+        if (epoch !== state.authEpoch) throw new ApiError('请求已失效', 0, null, 'stale');
+        if (path === '/api/status' && version === state.refreshVersion) setConnection('offline', window.location.protocol === 'file:' ?
+          '请通过 PrintHub 服务地址打开此页面' : '无法连接本机服务');
+        throw new ApiError('无法连接本机服务', 0, null, 'network');
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (epoch !== state.authEpoch) throw new ApiError('请求已失效', 0, null, 'stale');
+      if (response.status === 401) {
+        unauthorized();
+        throw new ApiError('需要访问令牌', 401);
+      }
+      let data;
+      try { data = JSON.parse(text); }
+      catch (error) {
+        throw new ApiError(response.ok ? '服务返回的 JSON 无效' : '请求失败（HTTP ' + response.status + '）', response.status);
+      }
+      if (!response.ok) {
+        throw new ApiError(data && typeof data.error === 'string' ? data.error :
+          '请求失败（HTTP ' + response.status + '）', response.status, data);
+      }
+      return data;
+    }
+    // 7. Runtime data and polling are independent of the editable configuration.
+    function formatUptime(seconds) {
+      const minutes = Math.floor(Math.max(0, seconds) / 60);
+      return Math.floor(minutes / 1440) + ' 天 ' + Math.floor(minutes % 1440 / 60) + ' 小时 ' + minutes % 60 + ' 分';
+    }
+    function renderRuntime() {
+      const data = state.status;
+      const live = state.connection === 'connected';
+      $('#runtime-version').textContent = data ? data.version : '—';
+      $('#runtime-config-path').textContent = data ? data.configPath : '—';
+      $('#runtime-uptime').textContent = data ? formatUptime(data.uptimeSeconds) : '—';
+      $('#footer-version').textContent = 'PrintHub' + (data ? ' ' + data.version : '') + ' · Windows 打印服务';
+      let pills = '<span class="pill neutral">' + (data ?
+        (data.mode === 'service' ? 'Windows 服务' : '前台进程') : '等待获取状态') + '</span>';
+      if (data && live) {
+        if (data.service === null) pills += '<span class="pill warning">服务状态未知</span>';
+        else if (data.service) {
+          pills += '<span class="pill neutral">' + (data.service.installed ? '服务已安装' : '服务未安装') + '</span>';
+          if (data.service.installed) pills += '<span class="pill ' + (data.service.running ? 'success' : 'warning') +
+            '"><span class="dot"></span>' + (data.service.running ? '服务运行中' : '服务已停止') + '</span>';
+        }
+      } else if (data) pills += '<span class="pill warning">状态未更新</span>';
+      updateHtml($('#service-pills'), pills);
+      $('#lpd-endpoint').textContent = data ? data.lpd.listenAddress + ':' + data.lpd.port : '—';
+      $('#ppm-endpoint').textContent = data ? data.lpd.listenAddress + ':161 / UDP' : '—';
+      const prefix = live ? '' : '上次：';
+      $('#lpd-state').textContent = data ? prefix + (data.lpd.running ? '监听中' : '已停止') : '';
+      $('#ppm-state').textContent = data ? prefix + (data.ppm.enabled ? (data.ppm.running ? '运行中' : '未运行') : '已关闭') : '';
+      const raw = data ? data.rawServers : [];
+      $('#raw-summary').textContent = !data ? '—' : !raw.length ? '无监听器' :
+        raw.slice(0, 3).map(server => server.printerName + ' · ' + server.listenAddress + ':' + server.port).join('；') +
+        (raw.length > 3 ? ' 等 ' + raw.length + ' 个监听器' : '');
+      $('#listener-summary').textContent = data ? prefix + data.mappingCount + ' 条映射 · TCP ' +
+        (raw.length + (data.lpd.running ? 1 : 0)) + ' 个监听器 · UDP ' + (data.ppm.running ? 1 : 0) + ' 个监听器' : '等待获取监听器信息';
+      const apply = data && data.apply;
+      const feedback = $('#apply-feedback');
+      feedback.hidden = !apply || !['applying', 'error'].includes(apply.state);
+      feedback.className = 'feedback' + (apply && apply.state === 'error' ? ' error' : '');
+      feedback.textContent = !apply ? '' : apply.state === 'error' ? prefix + (apply.lastError || '配置应用失败') :
+        apply.state === 'applying' ? prefix + '正在应用配置…' : '';
+    }
+    function renderLogs() {
+      $('#log-meta').textContent = state.logError ? '日志读取失败' : state.logs === null ? '等待获取' :
+        state.logs.length + ' 条' + (state.connection === 'connected' ? '' : ' · 上次获取');
+      $('#log-meta').title = state.logError;
+      const html = state.logs === null ? '等待获取日志' : !state.logs.length ? '暂无日志' : state.logs.map(line => {
+        // Color by the spdlog level field, not arbitrary message text: lines such
+        // as "error=2147942450" or "no error" are not error-severity entries.
+        const levelField = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+([a-z]+)\s*:/i.exec(line);
+        const logLevel = levelField ? levelField[1].toLowerCase() : '';
+        const level = /^(error|critical|fatal)$/.test(logLevel) ? 'error' :
+          /^warn/.test(logLevel) ? 'warn' : logLevel === 'info' ? 'info' : '';
+        return '<div class="log-line ' + level + '">' + escapeHtml(line) + '</div>';
+      }).join('');
+      updateHtml($('#log-lines'), html);
+    }
+    function setConnection(connection, detail = '') {
+      state.connection = connection;
+      $('#connection-bar').className = 'connection-bar ' + connection;
+      $('#connection-label').textContent = { connecting: '正在连接', connected: '已连接', offline: '服务不可达' }[connection];
+      $('#connection-detail').textContent = detail;
+      $('#enter-token').hidden = connection === 'connected';
+      $('#status-badge').textContent = { connecting: '连接中', connected: '实时', offline: '离线' }[connection];
+      $('#status-badge').className = connection === 'connected' ? 'pill success' : connection === 'offline' ? 'pill warning' : 'badge badge-neutral';
+      renderRuntime();
+      renderLogs();
+    }
+    async function readStatus() {
+      const data = await api('/api/status');
+      if (!data || typeof data.version !== 'string' || typeof data.configPath !== 'string' ||
+          !['service', 'console'].includes(data.mode) || !Number.isFinite(data.uptimeSeconds) ||
+          !data.lpd || !data.ppm || !data.apply || !Number.isInteger(data.mappingCount) ||
+          !Array.isArray(data.rawServers) || data.rawServers.some(server => !server || typeof server.printerName !== 'string')) {
+        throw new ApiError('状态响应格式无效', 200);
+      }
+      return data;
+    }
+    async function readLogs() {
+      const data = await api('/api/logs?tail=80');
+      if (!data || !Array.isArray(data.lines) || data.lines.some(line => typeof line !== 'string')) {
+        throw new ApiError('日志响应格式无效', 200);
+      }
+      return data.lines;
+    }
+    async function readConfiguration() {
+      return parseConfiguration(JSON.stringify(await api('/api/config')));
+    }
+    async function loadPrinters(force = false) {
+      if (!state.token || (!force && state.printersLoadedAt &&
+          Date.now() - state.printersLoadedAt < 60000)) return;
+      const epoch = state.authEpoch;
+      if (printersTask && printersTask.epoch === epoch) return printersTask.promise;
+      const task = { epoch, promise: null };
+      task.promise = (async () => {
+        try {
+          const data = await api('/api/printers');
+          if (epoch !== state.authEpoch || !data || !Array.isArray(data.printers)) return;
+          state.printers = [...new Set(data.printers.filter(name => typeof name === 'string'))];
+          renderPrinterOptions();
+          state.printersLoadedAt = Date.now();
+        } catch (error) {
+          // Suggestions are optional. Preserve the list and save capability; api() handles 401.
+        }
+      })();
+      printersTask = task;
+      try { await task.promise; }
+      finally { if (printersTask === task) printersTask = null; }
+    }
+    async function refreshService() {
+      const epoch = state.authEpoch;
+      const version = state.refreshVersion;
+      if (refreshTask && refreshTask.epoch === epoch && refreshTask.version === version) return refreshTask.promise;
+      const task = { epoch, version, promise: null };
+      task.promise = (async () => {
+        const results = await Promise.allSettled([readStatus(), readLogs()]);
+        if (epoch !== state.authEpoch || version !== state.refreshVersion) return;
+        if (results[0].status === 'fulfilled') state.status = results[0].value;
+        if (results[1].status === 'fulfilled') { state.logs = results[1].value; state.logError = ''; }
+        else state.logError = results[1].reason.message;
+        const failure = results[0].status === 'rejected' ? results[0] : null;
+        setConnection(failure ? 'offline' : 'connected', failure ?
+          (failure.reason.kind === 'network' && window.location.protocol === 'file:' ?
+            '请通过 PrintHub 服务地址打开此页面' : failure.reason.message) : '');
+      })();
+      refreshTask = task;
+      try { await task.promise; }
+      finally { if (refreshTask === task) refreshTask = null; }
+    }
+    function stopPolling() { clearTimeout(pollTimer); pollTimer = null; }
+    function schedulePoll() {
+      stopPolling();
+      if (!state.token || document.hidden || state.saving || state.initializing || state.importing) return;
+      pollTimer = setTimeout(pollService, 3000);
+    }
+    async function pollService() {
+      stopPolling();
+      if (!state.token || document.hidden || state.saving || state.initializing || state.importing) return;
+      try {
+        if (state.configLoaded) await refreshService();
+        else await initializePage(true);
+      } catch (error) {
+        if (error.kind !== 'stale' && error.status !== 401) setServerError(error.message);
+      } finally { schedulePoll(); }
+    }
+    function setServerError(message) {
+      $('#server-error').textContent = message;
+      $('#server-error').hidden = !message;
+    }
+    function setDirty(dirty) {
+      state.dirty = dirty;
+      $('#dirty-badge').hidden = !dirty;
+      $('#config-notice').textContent = state.configLoaded ? '保存配置后立即应用到服务' :
+        dirty ? '配置尚未与服务同步' : '等待读取服务配置';
+    }
+    function markEdited() { state.editVersion++; setDirty(true); setServerError(''); }
+    function updateControls() {
+      const busy = state.saving || state.initializing || state.importing;
+      const locked = busy || (!state.configLoaded && !state.dirty);
+      $$('#config-form input, #config-form select, #config-form textarea, #add-mapping, #mapping-list [data-remove]')
+        .forEach(control => { control.disabled = locked; });
+      $('#config-form').setAttribute('aria-busy', String(busy));
+      $('#save-config').disabled = busy;
+      updateHtml($('#save-config'), icon('save') + (state.saving ? '应用中…' : '保存配置'));
+      $('#import-json').disabled = busy;
+    }
+    function acceptConfiguration(config) {
+      state.config = config;
+      state.rawCache = new WeakMap();
+      state.configLoaded = true;
+      setDirty(false);
+      setServerError('');
+      $('#import-feedback').hidden = true;
+      populateForm();
+    }
+    async function initializePage(quiet = false) {
+      const epoch = state.authEpoch;
+      if (initialization && initialization.epoch === epoch) return initialization.promise;
+      stopPolling();
+      state.initializing = true;
+      updateControls();
+      if (!quiet) setConnection('connecting');
+      const revision = state.editVersion;
+      const preserveDraft = state.dirty;
+      const task = { epoch, promise: null };
+      task.promise = (async () => {
+        try {
+          if (!state.token) {
+            await api('/api/status');
+            setConnection('offline', '需要访问令牌');
+            showTokenDialog();
+            return;
+          }
+          const config = await readConfiguration();
+          if (epoch !== state.authEpoch) return;
+          state.configLoaded = true;
+          // Reauthentication must not discard a form left unsaved by a failed PUT.
+          if (!preserveDraft && revision === state.editVersion) acceptConfiguration(config);
+          else setDirty(true);
+          void loadPrinters(true);
+          await refreshService();
+        } catch (error) {
+          if (epoch !== state.authEpoch || error.kind === 'stale' || error.status === 401) return;
+          setServerError(error.message);
+          await refreshService();
+          if (!quiet) toast(error.message, true);
+        } finally {
+          if (epoch === state.authEpoch) { state.initializing = false; updateControls(); schedulePoll(); }
+        }
+      })();
+      initialization = task;
+      try { await task.promise; }
+      finally { if (initialization === task) initialization = null; }
+    }
+    // 8. Applying requires explicit confirmation; failed writes leave the form intact.
+    function focusIssue(path) {
+      const control = $$('#config-form [data-path]').find(item => item.dataset.path === path) || $('#validation-heading');
+      control.focus({ preventScroll: true });
+      control.scrollIntoView({ block: 'center' });
+    }
+    function readyToSave() {
+      if (state.saving || state.initializing || state.importing) return false;
+      if (!state.token || state.connection !== 'connected') {
+        toast(state.token ? '无法连接本机服务' : '请输入访问令牌后保存配置', true);
+        showTokenDialog();
+        return false;
+      }
+      if (!state.configLoaded) { toast('尚未读取服务配置，请稍后重试', true); return false; }
+      refresh();
+      if (state.errors.length) { focusIssue(state.errors[0].path); toast('请先修正配置错误。', true); return false; }
+      return true;
+    }
+    async function applyConfiguration() {
+      if (!readyToSave()) return;
+      const epoch = state.authEpoch;
+      state.saving = true;
+      state.refreshVersion++;
+      stopPolling();
+      setServerError('');
+      updateControls();
+      try {
+        const result = await api('/api/config', { method: 'PUT', body: serializeConfiguration(state.config) });
+        if (!result || !(result.applied === true || (result.applied === false && result.unchanged === true))) {
+          throw new ApiError('服务返回的应用结果无效，请核对运行状态', 200);
+        }
+        toast(result.applied ? '配置已应用' : '配置未变化');
+        setDirty(false);
+        state.configLoaded = false;
+        try {
+          const config = await readConfiguration();
+          if (epoch !== state.authEpoch) return;
+          acceptConfiguration(config);
+          void loadPrinters();
+        } catch (error) {
+          if (error.kind === 'stale' || error.status === 401) return;
+          toast('配置已处理，但重新读取配置失败：' + error.message, true);
+          setDirty(false);
+        }
+        if (epoch === state.authEpoch && state.token) await refreshService();
+      } catch (error) {
+        if (error.kind === 'stale' || error.status === 401) return;
+        let message = error.message;
+        if (error.status === 409) message = '另一项配置正在应用，请稍后重试';
+        else if (error.status === 500) message = (error.data && error.data.rolledBack === true ?
+          '应用失败，已回滚到原配置：' : error.data && error.data.rolledBack === false ?
+            '应用失败且回滚未完成：' : '应用失败（未确认回滚结果）：') + error.message;
+        if (error.status === 400 || error.status === 500) setServerError(message);
+        toast(message, true);
+        if ((error.status === 500 || error.status === 200) && state.token) await refreshService();
+      } finally {
+        state.saving = false;
+        updateControls();
+        schedulePoll();
+      }
+    }
+    // 9. Form, dialogs and import/export interactions.
+    $('#enter-token').addEventListener('click', () => showTokenDialog());
+    $('#cancel-token').addEventListener('click', () => closeDialog('#token-dialog'));
+    $('#token-dialog').addEventListener('close', () => { $('#token-input').value = ''; });
+    $('#token-input').addEventListener('input', () => {
+      $('#token-error').hidden = true;
+      $('#token-input').setAttribute('aria-invalid', 'false');
+    });
+    $('#token-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const token = $('#token-input').value.trim();
+      if (!/^[\x21-\x7e]{16,256}$/.test(token)) {
+        showTokenDialog('令牌须为 16–256 个可打印 ASCII 字符，不能包含空格。');
+        return;
+      }
+      stopPolling();
+      state.authEpoch++;
+      state.token = token;
+      persistToken(token);
+      $('#token-input').value = '';
+      closeDialog('#token-dialog');
+      void initializePage();
+    });
+    $('#cancel-apply').addEventListener('click', () => closeDialog('#confirm-apply'));
+    $('#apply-config').addEventListener('click', () => {
+      closeDialog('#confirm-apply');
+      void applyConfiguration();
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stopPolling();
+      else void pollService();
+    });
+    $('#config-form').addEventListener('submit', event => event.preventDefault());
+    $('#config-form').addEventListener('input', event => {
+      const control = event.target;
+      if (!control.dataset.path) return;
+      const value = control.type === 'number' ?
+        (control.value === '' || !Number.isFinite(control.valueAsNumber) ? null : control.valueAsNumber) : control.value;
+      setField(control.dataset.path, value);
+      markEdited();
+      if (control.tagName === 'TEXTAREA') sizeTextarea(control);
+      refresh();
+    });
+    $('#ppm-switch').addEventListener('change', event => {
+      state.config.ppmDisabled = !event.target.checked;
+      markEdited();
+      refresh();
+    });
+    $('#mapping-list').addEventListener('focusin', event => {
+      if (event.target.matches('input[data-path$=".name"]')) void loadPrinters();
+    });
+    $('#mapping-list').addEventListener('change', event => {
+      if (!event.target.hasAttribute('data-raw-index')) return;
+      const index = Number(event.target.dataset.rawIndex);
+      const mapping = state.config.printerMap[index];
+      if (event.target.checked) {
+        const used = new Set([state.config.lpdServer.port].concat(state.config.printerMap
+          .filter(item => item.rawServer).map(item => item.rawServer.port)));
+        let port = 9100;
+        while (used.has(port) && port < 65535) port++;
+        mapping.rawServer = state.rawCache.get(mapping) || { listenAddress: state.config.lpdServer.listenAddress, port };
+      } else {
+        state.rawCache.set(mapping, mapping.rawServer);
+        delete mapping.rawServer;
+      }
+      markEdited();
+      renderMappings();
+      refresh();
+      $('[data-raw-index="' + index + '"]').focus({ preventScroll: true });
+    });
+    $('#mapping-list').addEventListener('click', event => {
+      const button = event.target.closest('[data-remove]');
+      if (!button) return;
+      const index = Number(button.dataset.remove);
+      state.config.printerMap.splice(index, 1);
+      markEdited();
+      renderMappings();
+      refresh();
+      const remaining = $$('[data-remove]');
+      (remaining[Math.min(index, remaining.length - 1)] || $('#add-mapping')).focus({ preventScroll: true });
+      toast('已从表单删除映射，保存后应用。');
+    });
+    $('#add-mapping').addEventListener('click', () => {
+      const index = state.config.printerMap.push({ name: '', lprQueue: '' }) - 1;
+      markEdited();
+      renderMappings();
+      refresh();
+      $('#map-' + index + '-name').focus();
+    });
+    $('#validation-errors').addEventListener('click', event => {
+      const button = event.target.closest('[data-error-path]');
+      if (!button) return;
+      focusIssue(button.dataset.errorPath);
+    });
+    $('#save-config').addEventListener('click', () => {
+      if (readyToSave()) showDialog('#confirm-apply');
+    });
+    function canExport() {
+      refresh();
+      if (state.errors.length) { toast('请先修正配置错误。', true); return false; }
+      return true;
+    }
+    function legacyCopy(text) {
+      const previous = document.activeElement;
+      const textarea = document.createElement('textarea');
+      textarea.className = 'clipboard-fallback';
+      textarea.value = text;
+      document.body.appendChild(textarea);
+      textarea.select();
+      let copied = false;
+      try { copied = document.execCommand('copy'); }
+      finally { textarea.remove(); if (previous) previous.focus({ preventScroll: true }); }
+      return copied;
+    }
+    $('#copy-json').addEventListener('click', async () => {
+      if (!canExport()) return;
+      const text = serializeConfiguration(state.config);
+      let copied = false;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+          copied = true;
+        }
+      } catch (error) { /* file:// permission fallback stays within this document. */ }
+      if (!copied) {
+        try { copied = legacyCopy(text); } catch (error) { copied = false; }
+      }
+      toast(copied ? 'JSON 已复制到剪贴板。' : '浏览器未允许复制，请使用「下载 config.json」。', !copied);
+    });
+    $('#download-json').addEventListener('click', () => {
+      if (!canExport()) return;
+      const blob = new Blob([serializeConfiguration(state.config)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'config.json';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast('已生成 config.json 下载文件，未应用到服务。');
+    });
+    function readFileBytes(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('无法读取所选文件。'));
+        reader.onabort = () => reject(new Error('文件读取已取消。'));
+        reader.readAsArrayBuffer(file);
+      });
+    }
+    $('#import-json').addEventListener('click', () => $('#import-file').click());
+    $('#import-file').addEventListener('change', async event => {
+      const file = event.target.files[0];
+      event.target.value = '';
+      if (!file || state.saving || state.initializing || state.importing) return;
+      state.importing = true;
+      stopPolling();
+      updateControls();
+      try {
+        if (file.size > MAX_BYTES) importError('$', '文件超过 1 MiB（1,048,576 字节）。');
+        const bytes = await readFileBytes(file);
+        let source;
+        try { source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
+        catch (error) { importError('$', '文件必须是有效 UTF-8 编码，可带 UTF-8 BOM。'); }
+        const imported = parseConfiguration(source);
+        state.config = imported;
+        state.rawCache = new WeakMap();
+        markEdited();
+        populateForm();
+        $('#import-feedback').hidden = true;
+        $('#import-feedback').textContent = '';
+        toast('已导入到表单，点击保存后应用');
+      } catch (error) {
+        const issues = error.issues || [{ path: '$', message: 'JSON 解析或读取失败：' + error.message }];
+        $('#import-feedback').innerHTML = '<strong>导入未应用 · 当前草稿保持不变</strong><ul>' +
+          issues.map(issue => '<li><code>' + escapeHtml(issue.path) + '</code>：' + escapeHtml(issue.message) + '</li>').join('') + '</ul>';
+        $('#import-feedback').hidden = false;
+        toast('导入失败：' + issues[0].path + ' — ' + issues[0].message, true);
+      } finally {
+        state.importing = false;
+        updateControls();
+        schedulePoll();
+      }
+    });
+    populateForm();
+    state.token = initialToken();
+    void initializePage();
+  </script>
+</body>
+</html>

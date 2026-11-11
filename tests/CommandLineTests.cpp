@@ -1,4 +1,5 @@
 #include <CommandLine.hpp>
+#include <TextEncoding.h>
 
 #include "TestSupport.h"
 
@@ -30,6 +31,8 @@ void testDefaultsAndPaths() {
     const auto defaults = ParseCommandLine({}, kExecutablePath);
     require(defaults.configPath == L"C:\\Apps\\config.json", "Default configuration is next to the executable");
     require(!defaults.serviceAction && !defaults.help && !defaults.version, "Default process options");
+    require(!defaults.webBind && !defaults.webPort && !defaults.webToken,
+        "Web defaults remain implicit so installation only persists explicit options");
 
     const std::filesystem::path absolutePath = L"C:\\Config Folder\\settings.json";
     require(ParseCommandLine({L"--config", absolutePath.native()}, kExecutablePath).configPath == absolutePath,
@@ -125,6 +128,116 @@ void testServiceActions() {
     for (const auto& arguments : duplicates) requireInvalidArguments(arguments, "Duplicate option: --service");
 }
 
+void testWebOptions() {
+    const std::wstring token = L"ChangeMe-0123!=&/";
+    const std::vector<Arguments> forms{
+        {L"--web-bind", L"0.0.0.0", L"--web-port", L"8324", L"--web-token", token},
+        {L"--web-bind=0.0.0.0", L"--web-port=8324", L"--web-token=" + token}
+    };
+    for (const auto& arguments : forms) {
+        const auto parsed = ParseCommandLine(arguments, kExecutablePath);
+        require(parsed.webBind == "0.0.0.0" && parsed.webPort == 8324 && parsed.webToken == WideToUtf8(token),
+            "Spaced and inline web arguments preserve explicit values");
+        require(parsed.configPath == L"C:\\Apps\\config.json" && !parsed.serviceAction,
+            "Web arguments preserve configuration and service defaults");
+    }
+    std::wstring printableAscii;
+    for (wchar_t character = 0x21; character <= 0x7e; ++character) printableAscii.push_back(character);
+    for (const auto& value : std::vector<std::wstring>{
+        std::wstring(16, L'!'), std::wstring(256, L'~'), printableAscii, L"-0123456789abcdef"}) {
+        for (const auto& arguments : std::vector<Arguments>{{L"--web-token", value}, {L"--web-token=" + value}}) {
+            require(ParseCommandLine(arguments, kExecutablePath).webToken == WideToUtf8(value),
+                "Printable ASCII tokens, including leading dashes, are preserved verbatim");
+        }
+    }
+    const std::string invalidTokenMessage =
+        "Invalid value for --web-token: expected 16..256 printable ASCII characters";
+    for (const auto& value : std::vector<std::wstring>{
+        std::wstring(15, L'a'), std::wstring(257, L'a'), L"01234567 89abcdef",
+        L"0123456789abcdef\u4ee4", L"0123456789abcdef\t", L"0123456789abcdef\n",
+        L"0123456789abcdef\x7f", std::wstring(16, L'\0'), std::wstring(15, L'-'),
+        std::wstring(16, static_cast<wchar_t>(0xd800))}) {
+        for (const auto& arguments : std::vector<Arguments>{{L"--web-token", value}, {L"--web-token=" + value}}) {
+            require(requireInvalidArguments(arguments, invalidTokenMessage) == invalidTokenMessage,
+                "Invalid token diagnostic is stable");
+        }
+    }
+
+    for (const auto* address : {L"127.0.0.1", L"255.255.255.255", L"010.001.002.003"}) {
+        const auto parsed = ParseCommandLine({L"--web-bind", address}, kExecutablePath);
+        require(parsed.webBind && std::wstring(parsed.webBind->begin(), parsed.webBind->end()) == address,
+            "Valid IPv4 addresses retain their decimal spelling");
+    }
+    for (const auto* address : {L"256.1.1.1", L"::1", L"localhost", L"127.1", L"127.0.0.1 ", L"1.2.3.4.5"}) {
+        for (const auto& arguments : std::vector<Arguments>{
+            {L"--web-bind", address}, {std::wstring(L"--web-bind=") + address}}) {
+            requireInvalidArguments(arguments, "Invalid value for --web-bind:");
+        }
+    }
+    for (const auto port : {1, 65535}) {
+        require(ParseCommandLine({L"--web-port", std::to_wstring(port)}, kExecutablePath).webPort == port,
+            "Web port accepts both endpoints of 1..65535");
+    }
+    for (const auto* port : {L"0", L"65536", L"not-a-number", L"1.5", L"+80", L"80x", L" 80", L"80 ",
+        L"999999999999999999999999999999999"}) {
+        for (const auto& arguments : std::vector<Arguments>{
+            {L"--web-port", port}, {std::wstring(L"--web-port=") + port}}) {
+            requireInvalidArguments(arguments, "Invalid value for --web-port:");
+        }
+    }
+    requireInvalidArguments({L"--web-port=-1"}, "Invalid value for --web-port:");
+
+    const std::vector<std::pair<std::wstring, std::wstring>> options{
+        {L"--web-bind", L"127.0.0.1"}, {L"--web-port", L"8323"}, {L"--web-token", token}
+    };
+    for (const auto& [option, value] : options) {
+        const std::vector<Arguments> missing{
+            {option}, {option + L"="}, {option, L""}, {option, L"--help"}
+        };
+        for (const auto& arguments : missing) {
+            const auto message = "Missing value for " + WideToUtf8(option);
+            require(requireInvalidArguments(arguments, message) == message, "Missing web value diagnostic is stable");
+        }
+        const std::vector<Arguments> spellings{{option, value}, {option + L"=" + value}};
+        for (const auto& first : spellings) {
+            for (const auto& second : spellings) {
+                auto arguments = first;
+                arguments.insert(arguments.end(), second.begin(), second.end());
+                const auto message = "Duplicate option: " + WideToUtf8(option);
+                require(requireInvalidArguments(arguments, message) == message, "Duplicate web option diagnostic is stable");
+            }
+        }
+    }
+    const auto combined = ParseCommandLine({L"--web-port=8324", L"--service", L"install", L"--config=config.json",
+        L"--web-token", token, L"--web-bind", L"0.0.0.0"}, kExecutablePath);
+    require(combined.serviceAction == ServiceAction::Install && combined.webPort == 8324 && combined.webBind == "0.0.0.0" &&
+        combined.configPath == std::filesystem::absolute(L"config.json").lexically_normal() &&
+        combined.webToken == WideToUtf8(token),
+        "Web, config and service options can be freely interleaved");
+}
+
+void testInstallArguments() {
+    require(BuildInstallArguments(ParseCommandLine({}, kExecutablePath)) ==
+        Arguments{L"--config", L"C:\\Apps\\config.json"}, "Default installation persists only the configuration path");
+    const auto full = ParseCommandLine({L"--web-token", L"ChangeMe-0123!=&/", L"--web-port=8324",
+        L"--service=install", L"--web-bind=0.0.0.0", L"--config", L"C:\\Config Folder\\settings.json"}, kExecutablePath);
+    require(BuildInstallArguments(full) == Arguments{L"--config", L"C:\\Config Folder\\settings.json",
+        L"--web-bind", L"0.0.0.0", L"--web-port", L"8324", L"--web-token", L"ChangeMe-0123!=&/"},
+        "Installation emits explicit web values in stable order without repeating the service action");
+    require(BuildInstallArguments(ParseCommandLine({L"--web-bind=127.0.0.1"}, kExecutablePath)) ==
+        Arguments{L"--config", L"C:\\Apps\\config.json", L"--web-bind", L"127.0.0.1"},
+        "An explicit default bind address is persisted without other web defaults");
+    require(BuildInstallArguments(ParseCommandLine({L"--web-port=8323"}, kExecutablePath)) ==
+        Arguments{L"--config", L"C:\\Apps\\config.json", L"--web-port", L"8323"},
+        "An explicit default port is persisted without other web defaults");
+    require(BuildInstallArguments(ParseCommandLine({L"--web-token=ChangeMe-0123!=&/"}, kExecutablePath)) ==
+        Arguments{L"--config", L"C:\\Apps\\config.json", L"--web-token", L"ChangeMe-0123!=&/"},
+        "Token-only installation persists the original token string");
+    require(BuildInstallArguments(ParseCommandLine({L"--web-port=9999", L"--web-bind=0.0.0.0"}, kExecutablePath)) ==
+        Arguments{L"--config", L"C:\\Apps\\config.json", L"--web-bind", L"0.0.0.0", L"--web-port", L"9999"},
+        "Partial web options do not add an implicit token");
+}
+
 void testUnknownOptionsAndHelp() {
     const std::vector<Arguments> unknown{
         {L"--unknown"}, {L"config.json"}, {L"--"}, {L""}, {L"--configx=x.json"},
@@ -149,6 +262,12 @@ void testUnknownOptionsAndHelp() {
         "Usage describes config and service options");
     require(usage.find("--help") != std::string::npos && usage.find("--version") != std::string::npos,
         "Usage describes help and version options");
+    require(usage.find("--web-bind") != std::string::npos && usage.find("--web-port") != std::string::npos &&
+        usage.find("--web-token <token>") != std::string::npos && usage.find("LAN example:") != std::string::npos,
+        "Usage describes every web option and a LAN example");
+    require(usage.find("--web-token-") == std::string::npos &&
+        usage.find("default: random per start, printed to the log") != std::string::npos,
+        "Usage describes a token value and the random startup default");
     require(usage.find("docs/configuration.md") != std::string::npos &&
         usage.find("config.example.json") != std::string::npos, "Usage points to configuration documentation");
 }
@@ -194,18 +313,36 @@ void testWindowsQuoting() {
 void testServiceCommandLineRoundTrip() {
     const std::filesystem::path executable = L"C:\\Program Files\\\u6253\u5370\\PrintHub.exe";
     const std::filesystem::path config = L"C:\\Config Folder\\\u914d\u7f6e.json";
-    const auto command = BuildWindowsCommandLine({executable.native(), L"--config", config.native()});
-    int count = 0;
-    auto* parsed = CommandLineToArgvW(command.c_str(), &count);
-    require(parsed != nullptr, "Service command line parsing failed");
-    struct LocalArgvDeleter {
-        void operator()(wchar_t** value) const { LocalFree(value); }
+    const std::wstring token = LR"(-0123456789!=&/\\"tail\)";
+    const std::vector<Arguments> requests{
+        {L"--config", config.native(), L"--service=install"},
+        {L"--config", config.native(), L"--web-token", token,
+            L"--service=install", L"--web-port=8324", L"--web-bind=0.0.0.0"},
+        {L"--web-token=" + token, L"--config", config.native(), L"--service=install"}
     };
-    const std::unique_ptr<wchar_t*, LocalArgvDeleter> owner(parsed);
-    require(count == 3 && executable == std::filesystem::path(parsed[0]), "Service executable path is preserved");
-    const auto options = ParseCommandLine({parsed[1], parsed[2]}, executable);
-    require(options.configPath == config && !options.serviceAction,
-        "Installed command line preserves the configuration and does not repeat installation");
+    for (const auto& request : requests) {
+        const auto requested = ParseCommandLine(request, executable);
+        auto installedArguments = BuildInstallArguments(requested);
+        installedArguments.insert(installedArguments.begin(), executable.native());
+        const auto command = BuildWindowsCommandLine(installedArguments);
+        int count = 0;
+        auto* parsed = CommandLineToArgvW(command.c_str(), &count);
+        require(parsed != nullptr, "Service command line parsing failed");
+        struct LocalArgvDeleter {
+            void operator()(wchar_t** value) const { LocalFree(value); }
+        };
+        const std::unique_ptr<wchar_t*, LocalArgvDeleter> owner(parsed);
+        require(count == static_cast<int>(installedArguments.size()) && executable == std::filesystem::path(parsed[0]),
+            "Service executable path and argument count are preserved");
+        Arguments reparsedArguments;
+        for (int index = 1; index < count; ++index) reparsedArguments.emplace_back(parsed[index]);
+        const auto options = ParseCommandLine(reparsedArguments, executable);
+        require(options.configPath == config && !options.serviceAction,
+            "Installed command line preserves the configuration and does not repeat installation");
+        require(options.webBind == requested.webBind && options.webPort == requested.webPort &&
+            options.webToken == requested.webToken,
+            "Installed command line preserves web settings, token punctuation, quotes and backslashes");
+    }
 }
 
 } // namespace
@@ -215,6 +352,8 @@ int main() {
         runTest("defaults and paths", testDefaultsAndPaths);
         runTest("config options", testConfigOptions);
         runTest("service actions", testServiceActions);
+        runTest("web options", testWebOptions);
+        runTest("install arguments", testInstallArguments);
         runTest("unknown options and help", testUnknownOptionsAndHelp);
         runTest("Windows quoting", testWindowsQuoting);
         runTest("service command line round trip", testServiceCommandLineRoundTrip);

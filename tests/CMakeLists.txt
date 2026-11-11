@@ -16,6 +16,7 @@ function(printhub_add_test target)
 endfunction()
 
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(httplib CONFIG REQUIRED)
 
 printhub_add_test(PrintHubConfigurationTests
     ServiceConfigurationTests.cpp
@@ -63,3 +64,10 @@ printhub_add_test(PrintHubPpmMibTests
     ${PROJECT_SOURCE_DIR}/src/server/SnmpProtocol.cpp
     ${PROJECT_SOURCE_DIR}/src/ServiceConfiguration.cpp
 )
+
+printhub_add_test(PrintHubWebApiTests
+    WebApiTests.cpp
+    ${PROJECT_SOURCE_DIR}/src/WebServer.cpp
+)
+target_link_libraries(PrintHubWebApiTests PRIVATE httplib::httplib PrintHubWebAssets nlohmann_json::nlohmann_json ws2_32)
+set_tests_properties(PrintHubWebApiTests PROPERTIES TIMEOUT 30)

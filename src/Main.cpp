@@ -1,6 +1,10 @@
-#include <Server.h>
+#include <Windows.h>
+#include <winspool.h>
 #include <winsvc.h>
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <config.h>
 #include <filesystem>
 #include <minwindef.h>
@@ -9,9 +13,12 @@
 #include <utility.h>
 #include <vector>
 #include <cstdlib>
+#include <ctime>
+#include <cwchar>
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -21,11 +28,12 @@
 #include <fmt/format.h>
 #include <CommandLine.hpp>
 #include <ConfigurationFile.hpp>
-#include <NetworkRuntime.h>
-#include <SnmpServer.h>
-#include <PpmMib.h>
-#include <PrinterMetadataCollector.h>
+#include <PrintRuntime.h>
 #include <TextEncoding.h>
+#include <WebServer.h>
+#include <nlohmann/json.hpp>
+
+extern "C" BOOLEAN NTAPI SystemFunction036(PVOID RandomBuffer, ULONG RandomBufferLength);
 
 namespace {
 
@@ -37,7 +45,6 @@ constexpr DWORD kServiceStatusWaitHintMs = 60000;
 constexpr DWORD kInitialServiceCheckpoint = 1;
 constexpr DWORD kServiceStopCheckpointIntervalMs = 5000;
 constexpr DWORD kMetadataDiagnosticPollMs = 1000;
-constexpr auto kMetadataShutdownBudget = std::chrono::milliseconds(500);
 
 std::wstring widenAscii(std::string_view value) {
 	return std::wstring(value.begin(), value.end());
@@ -89,6 +96,271 @@ std::atomic<DWORD> g_serviceCheckpoint = kInitialServiceCheckpoint;
 std::unique_ptr<CommandLine> g_commandLine;
 std::optional<ServiceConfiguration> g_configuration;
 
+namespace {
+
+using Json = nlohmann::json;
+
+struct WebSettings {
+	std::string listenAddress;
+	std::uint16_t port;
+	std::string accessToken;
+};
+
+std::string GenerateAccessToken() {
+	std::array<unsigned char, 32> bytes{};
+	if (!SystemFunction036(bytes.data(), static_cast<ULONG>(bytes.size()))) {
+		throw std::runtime_error("Could not generate web access token");
+	}
+	constexpr char hex[] = "0123456789abcdef";
+	std::string token(bytes.size() * 2, '\0');
+	for (std::size_t index = 0; index < bytes.size(); ++index) {
+		token[index * 2] = hex[bytes[index] >> 4];
+		token[index * 2 + 1] = hex[bytes[index] & 0x0f];
+	}
+	return token;
+}
+
+WebSettings ResolveWebSettings(const CommandLine& commandLine) {
+	return {
+		commandLine.webBind.value_or("127.0.0.1"),
+		commandLine.webPort.value_or(8323),
+		commandLine.webToken ? *commandLine.webToken : GenerateAccessToken()
+	};
+}
+
+void LogWebAccessToken(const std::string& token, bool generated) {
+	const auto logger = spdlog::default_logger();
+	const auto previous = logger->level();
+	if (previous > spdlog::level::info) logger->set_level(spdlog::level::info);
+	try {
+		if (generated) logger->info("Web UI access token generated for this start: {}", token);
+		else logger->info("Web UI access token: {}", token);
+	} catch (...) {
+		if (previous > spdlog::level::info) logger->set_level(previous);
+		throw;
+	}
+	if (previous > spdlog::level::info) logger->set_level(previous);
+	logger->flush();
+}
+
+struct HandleCloser {
+	void operator()(HANDLE handle) const noexcept {
+		if (handle) CloseHandle(handle);
+	}
+};
+
+// Stop(false) retains WebServer callbacks until process exit. Everything they
+// use must therefore be owned by those callbacks, rather than mainRun's stack.
+struct WebRuntimeState {
+	PrintRuntime runtime;
+	std::atomic<std::uint16_t> webPort{0};
+	std::unique_ptr<void, HandleCloser> runtimeChangedEvent;
+	std::mutex applyMutex;
+	std::atomic<bool> stopping{false};
+	std::filesystem::path configPath;
+	std::chrono::system_clock::time_point startedAt;
+	std::chrono::steady_clock::time_point startedSteady;
+	bool serviceMode = false;
+};
+
+std::string DumpJson(const Json& value) {
+	return value.dump(-1, ' ', false, Json::error_handler_t::replace);
+}
+
+std::string InstalledPrinterNamesJson() {
+	constexpr DWORD kMaxPrinterBufferBytes = 8 * 1024 * 1024;
+	std::vector<BYTE> buffer;
+	DWORD bytesNeeded = 0;
+	DWORD printerCount = 0;
+	// Probe with a null buffer, then fill it with at most two resize retries.
+	for (int attempt = 0; ; ++attempt) {
+		if (EnumPrintersW(PRINTER_ENUM_LOCAL, nullptr, 2,
+			buffer.empty() ? nullptr : buffer.data(), static_cast<DWORD>(buffer.size()),
+			&bytesNeeded, &printerCount)) break;
+		const auto error = GetLastError();
+		if (error == ERROR_INSUFFICIENT_BUFFER && bytesNeeded > kMaxPrinterBufferBytes) {
+			throw std::runtime_error("Installed printer list is too large");
+		}
+		if (error != ERROR_INSUFFICIENT_BUFFER || attempt == 3) {
+			throw std::runtime_error("Cannot enumerate installed printers: Win32 error " + std::to_string(error));
+		}
+		buffer.resize(bytesNeeded);
+	}
+
+	std::vector<std::wstring> wideNames;
+	const auto* printers = reinterpret_cast<const PRINTER_INFO_2W*>(buffer.data());
+	for (DWORD index = 0; index < printerCount; ++index) {
+		const auto& printer = printers[index];
+		if (!printer.pPrinterName || (printer.Attributes & PRINTER_ATTRIBUTE_NETWORK)) continue;
+		wideNames.emplace_back(printer.pPrinterName);
+	}
+	std::sort(wideNames.begin(), wideNames.end(), [](const std::wstring& left, const std::wstring& right) {
+		return _wcsicmp(left.c_str(), right.c_str()) < 0;
+	});
+	wideNames.erase(std::unique(wideNames.begin(), wideNames.end(),
+		[](const std::wstring& left, const std::wstring& right) {
+			return _wcsicmp(left.c_str(), right.c_str()) == 0;
+		}), wideNames.end());
+	std::vector<std::string> names;
+	names.reserve(wideNames.size());
+	for (const auto& name : wideNames) names.push_back(WideToUtf8(name));
+	return DumpJson({{"printers", names}});
+}
+
+Json UtcTimestamp(std::int64_t unixSeconds) {
+	const auto time = static_cast<std::time_t>(unixSeconds);
+	std::tm utc{};
+	if (gmtime_s(&utc, &time) != 0) return nullptr;
+	char formatted[32]{};
+	if (std::strftime(formatted, sizeof(formatted), "%Y-%m-%dT%H:%M:%SZ", &utc) == 0) return nullptr;
+	return std::string(formatted);
+}
+
+Json QueryServiceState() {
+	const auto manager = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
+	if (!manager) return nullptr;
+	const auto service = OpenServiceA(manager, PROJECT_NAME, SERVICE_QUERY_STATUS);
+	if (!service) {
+		const auto error = GetLastError();
+		CloseServiceHandle(manager);
+		if (error == ERROR_SERVICE_DOES_NOT_EXIST) {
+			return {{"installed", false}, {"running", false}};
+		}
+		return nullptr;
+	}
+	SERVICE_STATUS status{};
+	const auto queried = QueryServiceStatus(service, &status);
+	CloseServiceHandle(service);
+	CloseServiceHandle(manager);
+	if (!queried) return nullptr;
+	return {{"installed", true}, {"running", status.dwCurrentState == SERVICE_RUNNING}};
+}
+
+const char* ApplyStateName(PrintRuntime::ApplyState state) {
+	switch (state) {
+	case PrintRuntime::ApplyState::Idle: return "idle";
+	case PrintRuntime::ApplyState::Applying: return "applying";
+	case PrintRuntime::ApplyState::Error: return "error";
+	}
+	return "error";
+}
+
+std::string StatusJson(const WebRuntimeState& state, const WebSettings& webSettings) {
+	const auto snapshot = state.runtime.GetSnapshot();
+	Json rawServers = Json::array();
+	for (const auto& listener : snapshot.rawListeners) {
+		rawServers.push_back({
+			{"printerName", AcpToUtf8(listener.printerName)},
+			{"listenAddress", listener.listenAddress},
+			{"port", listener.port}
+		});
+	}
+	const auto startedUnixSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+		state.startedAt.time_since_epoch()).count();
+	const auto uptimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+		std::chrono::steady_clock::now() - state.startedSteady).count();
+	return DumpJson({
+		{"version", PROJECT_VERSION},
+		{"configPath", WideToUtf8(state.configPath.native())},
+		{"mode", state.serviceMode ? "service" : "console"},
+		{"startedAt", UtcTimestamp(startedUnixSeconds)},
+		{"uptimeSeconds", uptimeSeconds},
+		{"service", QueryServiceState()},
+		{"web", {{"listenAddress", webSettings.listenAddress}, {"port", state.webPort.load()}}},
+		{"lpd", {{"listenAddress", snapshot.lpdListenAddress},
+			{"port", snapshot.lpdPort}, {"running", snapshot.lpdRunning}}},
+		{"rawServers", std::move(rawServers)},
+		{"mappingCount", snapshot.mappingCount},
+		{"ppm", {{"enabled", snapshot.ppmEnabled}, {"running", snapshot.ppmRunning}}},
+		{"apply", {{"state", ApplyStateName(snapshot.applyState)},
+			{"lastError", snapshot.lastError.empty() ? Json(nullptr) : Json(snapshot.lastError)},
+			{"lastAppliedAt", snapshot.lastAppliedUnixSeconds == 0
+				? Json(nullptr) : UtcTimestamp(snapshot.lastAppliedUnixSeconds)}}}
+	});
+}
+
+std::string CurrentExceptionMessage() {
+	try {
+		throw;
+	} catch (const std::exception& error) {
+		return error.what();
+	} catch (...) {
+		return "unexpected error";
+	}
+}
+
+printhub::web::ApplyResponse ApplyConfiguration(WebRuntimeState& state, std::string_view body) {
+	// Apply and final shutdown take this mutex before entering PrintRuntime.
+	// Status only tries the runtime mutex and never takes the transaction lock.
+	std::unique_lock lock(state.applyMutex, std::try_to_lock);
+	if (!lock.owns_lock()) {
+		return {409, DumpJson({{"error", "configuration apply already in progress"}})};
+	}
+	if (state.stopping.load()) {
+		return {500, DumpJson({{"error", "Print runtime is shutting down"}})};
+	}
+	auto& runtime = state.runtime;
+	const auto& configPath = state.configPath;
+	ServiceConfiguration configuration;
+	std::string nextJson;
+	try {
+		configuration = ParseConfigurationJson(body, "web request");
+		nextJson = SerializeConfigurationJson(configuration);
+	} catch (const std::exception& error) {
+		return {400, DumpJson({{"error", error.what()}})};
+	}
+	std::string previousJson;
+	try {
+		previousJson = runtime.CurrentConfigJson();
+		const bool runtimeRunning = runtime.GetSnapshot().running;
+		if (runtimeRunning && nextJson == previousJson) {
+			bool fileMatches = false;
+			try {
+				fileMatches = SerializeConfigurationJson(LoadConfigurationFile(configPath)) == previousJson;
+			} catch (const std::exception&) {
+				// A missing, unreadable or invalid file also needs repair.
+			}
+			if (!fileMatches) {
+				SaveConfigurationFile(configPath, configuration);
+				return {200, DumpJson({{"applied", false}, {"unchanged", true}, {"fileRepaired", true}})};
+			}
+			return {200, DumpJson({{"applied", false}, {"unchanged", true}})};
+		}
+		SaveConfigurationFile(configPath, configuration);
+	} catch (const std::exception& error) {
+		return {500, DumpJson({{"error", error.what()}})};
+	}
+
+	try {
+		runtime.Apply(configuration);
+	} catch (...) {
+		auto error = CurrentExceptionMessage();
+		bool rolledBack = false;
+		try {
+			const auto restoredConfiguration = runtime.CopyConfiguration();
+			const bool runtimeRestored = runtime.GetSnapshot().running &&
+				SerializeConfigurationJson(restoredConfiguration) == previousJson;
+			if (runtimeRestored) {
+				try {
+					SaveConfigurationFile(configPath, restoredConfiguration);
+					rolledBack = true;
+				} catch (...) {
+					error += " (runtime restored, but configuration file rollback failed: " + CurrentExceptionMessage() + ")";
+				}
+			}
+		} catch (...) {
+			error += " (could not verify rollback: " + CurrentExceptionMessage() + ")";
+		}
+		SetEvent(state.runtimeChangedEvent.get());
+		spdlog::error("Web configuration apply failed: {}", error);
+		return {500, DumpJson({{"error", error}, {"rolledBack", rolledBack}})};
+	}
+	SetEvent(state.runtimeChangedEvent.get());
+	return {200, DumpJson({{"applied", true}, {"unchanged", false}})};
+}
+
+} // namespace
+
 static void signalShutdown() {
 	g_shutdown.store(true);
 	if (g_shutdownEvent) {
@@ -122,7 +394,7 @@ static void serviceActionHandle(ServiceAction action) {
 		(void)LoadConfigurationFile(g_commandLine->configPath);
 		utility::ServiceManager::InstallArgs args;
 		args.binaryPath = utility::getExecutablePathW();
-		args.arguments = { L"--config", g_commandLine->configPath.native() };
+		args.arguments = BuildInstallArguments(*g_commandLine);
 		args.dependencies = { L"Tcpip" };
 		args.displayName = widenAscii(PROJECT_NAME);
 		serviceManager.InstallSrv(args);
@@ -161,31 +433,6 @@ static void serviceActionHandle(ServiceAction action) {
 	default:
 		throw std::invalid_argument("Unknown service action");
 	}
-}
-
-static std::vector<std::unique_ptr<PrintServer>> createPrintServers(const ServiceConfiguration& configuration) {
-	std::vector<std::unique_ptr<PrintServer>> servers;
-	if (configuration.printerMap.empty()) {
-		spdlog::info("No printers are configured; no print listeners will be started");
-		return servers;
-	}
-
-	std::vector<LpdQueueMapping> queues;
-	queues.reserve(configuration.printerMap.size());
-	for (const auto& mapping : configuration.printerMap) {
-		if (mapping.rawServer) {
-			auto server = std::make_unique<RawPrinting>(mapping.name, mapping.rawServer->port,
-				configuration.rawServerMinThreads, configuration.maxPendingClients);
-			server->SetListenAddr(mapping.rawServer->listenAddress);
-			servers.push_back(std::move(server));
-		}
-		queues.push_back({ mapping.lprQueue, mapping.name });
-	}
-	auto lpdServer = std::make_unique<LPD>(configuration.lpdServer.port, std::move(queues), configuration.lpdMinThreads,
-		ServiceConfiguration::kDefaultLpdMaxControlFileBytes, configuration.maxPendingClients);
-	lpdServer->SetListenAddr(configuration.lpdServer.listenAddress);
-	servers.push_back(std::move(lpdServer));
-	return servers;
 }
 
 static BOOL WINAPI consoleHandler(DWORD ctrlType) {
@@ -280,20 +527,6 @@ struct RunResult {
 	bool terminateWithoutDllDetach = false;
 };
 
-class PrintListenerCleanup {
-public:
-	explicit PrintListenerCleanup(const std::vector<std::unique_ptr<PrintServer>>& servers) : m_servers(servers) {}
-	~PrintListenerCleanup() { Stop(); }
-	void Stop() {
-		if (m_stopped) return;
-		for (const auto& server : m_servers) server->Stop();
-		m_stopped = true;
-	}
-private:
-	const std::vector<std::unique_ptr<PrintServer>>& m_servers;
-	bool m_stopped = false;
-};
-
 static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 	std::string displayPath;
 	try {
@@ -309,97 +542,96 @@ static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 	spdlog::info("Build time: {}", __TIME__);
 
 	RunResult result;
-	std::shared_ptr<ppm::PrinterMetadataCollector> metadataCollector;
+	const auto state = std::make_shared<WebRuntimeState>();
+	state->configPath = g_commandLine->configPath;
+	state->serviceMode = g_serviceStatusHandle != nullptr;
+	auto& runtime = state->runtime;
+	auto& webPort = state->webPort;
+	auto& runtimeChangedEvent = state->runtimeChangedEvent;
+	std::unique_ptr<printhub::web::Server> web;
+	bool started = false;
 	try {
-		WinsockRuntime winsockRuntime;
-		auto servers = createPrintServers(*g_configuration);
-		PrintListenerCleanup printCleanup(servers);
-		std::optional<SnmpServer> snmpServer;
-		bool started = false;
+		runtime.Start(*g_configuration);
+		state->startedAt = std::chrono::system_clock::now();
+		state->startedSteady = std::chrono::steady_clock::now();
 		try {
-			for (auto& server : servers) {
-				server->Start();
-				spdlog::info("Server started on {}:{}", server->GetListenAddr(), server->GetListenPort());
+			const auto settings = ResolveWebSettings(*g_commandLine);
+			LogWebAccessToken(settings.accessToken, !g_commandLine->webToken.has_value());
+			webPort.store(settings.port);
+			// A hot apply can create the first metadata collector while the main
+			// loop is waiting indefinitely. Wake it without signalling shutdown.
+			runtimeChangedEvent.reset(CreateEventA(nullptr, FALSE, FALSE, nullptr));
+			if (!runtimeChangedEvent) {
+				throw std::runtime_error("Could not create configuration change event (Win32 error " +
+					std::to_string(GetLastError()) + ")");
 			}
-			if (!g_configuration->ppmDisabled && !g_configuration->printerMap.empty()) {
-				try {
-					auto directory = std::make_shared<const PpmDirectory>(PpmMib::BuildDirectory(*g_configuration));
-					std::vector<std::wstring> queueNames;
-					for (const auto& printer : directory->printers) queueNames.push_back(printer.queueName);
-					metadataCollector = std::make_shared<ppm::PrinterMetadataCollector>(std::move(queueNames));
-					snmpServer.emplace(g_configuration->lpdServer.listenAddress,
-						[directory, metadataCollector](std::string_view request) {
-							const auto statuses = metadataCollector->GetStatuses();
-							const auto identities = metadataCollector->GetIdentities();
-							const auto now = ppm::Clock::now();
-							const auto mib = PpmMib::WithMetadata(*directory, *statuses, *identities, now);
-							return snmp::Respond(request, mib);
-						},
-						SnmpServer::PORT, [](int error) {
-							spdlog::error("PPM discovery disabled because SNMP failed with WSA error {}", error);
-						});
-					snmpServer->Start();
-					spdlog::info("SNMP PPM server started on {}:{}", g_configuration->lpdServer.listenAddress, SnmpServer::PORT);
-				} catch (const std::exception& error) {
-					snmpServer.reset();
-					metadataCollector.reset();
-					spdlog::error("PPM discovery disabled because SNMP could not start: {}", error.what());
-				} catch (...) {
-					snmpServer.reset();
-					metadataCollector.reset();
-					spdlog::error("PPM discovery disabled because SNMP could not start: unexpected error");
-				}
-			} else if (g_configuration->ppmDisabled) {
-				spdlog::info("PPM discovery is disabled by configuration");
-			} else {
-				spdlog::info("PPM discovery skipped because no printers are configured");
-			}
-			if (!g_shutdown.load()) {
-				if (onStarted) onStarted();
-				started = true;
-				if (metadataCollector) {
-					spdlog::info("PPM discovery does not enable Windows SNMP status polling; check existing client port settings separately");
-					metadataCollector->Start();
-				}
-			}
-			while (!g_shutdown.load()) {
-				const auto wait = WaitForSingleObject(g_shutdownEvent, metadataCollector ? kMetadataDiagnosticPollMs : INFINITE);
-				if (wait == WAIT_OBJECT_0) break;
-				if (wait != WAIT_TIMEOUT) {
-					spdlog::error("Failed while waiting for shutdown event: {}", GetLastError());
-					result.code = EXIT_FAILURE;
-					break;
-				}
-				if (metadataCollector) metadataCollector->LogDiagnostics();
-			}
+			printhub::web::Options options;
+			options.listenAddress = settings.listenAddress;
+			options.port = settings.port;
+			options.accessToken = settings.accessToken;
+			options.logDirectory = utility::getExecutablePathW().parent_path() / L"logs";
+			options.version = PROJECT_VERSION;
+			options.statusJson = [state, settings] {
+				if (state->stopping.load()) throw std::runtime_error("Print runtime is shutting down");
+				return StatusJson(*state, settings);
+			};
+			options.configJson = [state] {
+				if (state->stopping.load()) throw std::runtime_error("Print runtime is shutting down");
+				return state->runtime.CurrentConfigJson();
+			};
+			options.printersJson = [] { return InstalledPrinterNamesJson(); };
+			options.applyConfig = [state](std::string_view body) {
+				return ApplyConfiguration(*state, body);
+			};
+			web = std::make_unique<printhub::web::Server>(std::move(options));
+			webPort.store(web->Start());
+			spdlog::info("Web UI started on {}:{}", settings.listenAddress, webPort.load());
 		} catch (const std::exception& error) {
-			spdlog::error("Error: {}", error.what());
-			result.code = EXIT_FAILURE;
+			web.reset();
+			spdlog::error("Web UI disabled: {}", error.what());
 		} catch (...) {
-			spdlog::error("Unexpected error in PrintHub service");
-			result.code = EXIT_FAILURE;
+			web.reset();
+			spdlog::error("Web UI disabled: unexpected error");
 		}
-
-		if (metadataCollector) metadataCollector->RequestStop();
-		ServiceStopProgressReporter stopProgress(started && g_serviceStatusHandle != nullptr);
-		if (snmpServer) {
-			snmpServer->Stop();
-			spdlog::info("SNMP server stopped on {}:{}", g_configuration->lpdServer.listenAddress, SnmpServer::PORT);
+		if (!g_shutdown.load()) {
+			if (onStarted) onStarted();
+			started = true;
 		}
-		printCleanup.Stop();
-	}
-	catch (const std::exception& e) {
-		spdlog::error("Error: {}", e.what());
+		while (!g_shutdown.load()) {
+			const auto timeout = runtime.HasActiveMetadata() ? kMetadataDiagnosticPollMs : INFINITE;
+			const HANDLE events[]{g_shutdownEvent, runtimeChangedEvent.get()};
+			const auto wait = runtimeChangedEvent
+				? WaitForMultipleObjects(2, events, FALSE, timeout)
+				: WaitForSingleObject(g_shutdownEvent, timeout);
+			if (wait == WAIT_OBJECT_0) break;
+			if (runtimeChangedEvent && wait == WAIT_OBJECT_0 + 1) continue;
+			if (wait != WAIT_TIMEOUT) {
+				spdlog::error("Failed while waiting for shutdown event: {}", GetLastError());
+				result.code = EXIT_FAILURE;
+				break;
+			}
+			runtime.PollDiagnostics();
+		}
+	} catch (const std::exception& error) {
+		spdlog::error("Error: {}", error.what());
+		result.code = EXIT_FAILURE;
+	} catch (...) {
+		spdlog::error("Unexpected error in PrintHub service");
 		result.code = EXIT_FAILURE;
 	}
-	if (metadataCollector) {
-		result.terminateWithoutDllDetach = !metadataCollector->StopUntil(ppm::Clock::now() + kMetadataShutdownBudget);
-		metadataCollector->LogDiagnostics();
-		if (result.terminateWithoutDllDetach) {
-			metadataCollector->LogUnfinishedWorkers();
-			spdlog::warn("PrintHub will exit without DLL detach; printer metadata collection is still blocked");
-			spdlog::default_logger()->flush();
-		}
+	ServiceStopProgressReporter stopProgress(started && g_serviceStatusHandle != nullptr);
+	state->stopping.store(true);
+	if (web) web->Stop(false); // Process exit follows; slow HTTP clients must not delay shutdown.
+	{
+		// Finish an already-running disk/apply transaction before stopping the
+		// runtime. Requests still receiving a body will be rejected on dispatch.
+		std::lock_guard lock(state->applyMutex);
+		runtime.Stop();
+		result.terminateWithoutDllDetach |= runtime.NeedsDetachBypass();
+	}
+	if (result.terminateWithoutDllDetach) {
+		spdlog::warn("PrintHub will exit without DLL detach; printer metadata collection is still blocked");
+		spdlog::default_logger()->flush();
 	}
 	return result;
 }

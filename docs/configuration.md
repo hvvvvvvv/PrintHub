@@ -1,7 +1,8 @@
 # PrintHub 配置文件与服务命令
 
 PrintHub 从一个 JSON 文件读取全部打印服务配置，包括打印机映射、监听地址、
-端口、日志、线程和 PPM 发现设置。服务启动时读取配置；修改后重启服务生效。
+端口、日志、线程和 PPM 发现设置。服务启动时读取配置；通过 Web 面板保存可即时热重载，
+直接编辑文件则需要重启服务。
 
 ## 文件位置与路径
 
@@ -14,7 +15,21 @@ PrintHub 从一个 JSON 文件读取全部打印服务配置，包括打印机�
 
 执行 `--service install` 时，安装程序将解析后的配置文件绝对路径写入 Windows
 服务的 `ImagePath`。随后由服务管理器启动时，使用已保存的路径，不受服务工作目录
-影响。修改文件内容后只需重启；要改用另一份文件，需停止、卸载，再用新路径安装。
+影响。直接修改文件内容后只需重启；要改用另一份文件，需停止、卸载，再用新路径安装。
+
+通过 [Web 面板](web-ui.md) 保存配置时，会先原子写回当前配置路径对应的同一文件，
+再立即热应用：在线停止旧 RAW/LPD 监听器与 PPM 并按新配置重建，`logLevel` 也即时生效。
+Windows 服务不会重启，Web 面板保持可用；活动打印连接会中断，面板保存前会请求确认。
+应用失败时会自动尝试回滚文件与运行配置，结果见 API 的 `rolledBack` 和状态中的
+`apply.lastError`；回滚未完成时需检查日志并恢复配置。没有文件监视热加载，直接编辑文件
+后仍需 `--service restart`（前台运行则重新启动进程）；也可将修改后的配置导入面板再保存。
+若回滚后文件与运行时不一致，再次保存相同的当前运行配置会尝试修复文件，成功响应包含 `fileRepaired:true`，写盘失败仍返回错误。
+
+JSON 中没有 Web 相关配置字段。Web 监听地址、端口和显式 token 来自启动命令行的
+`--web-bind`、`--web-port`、`--web-token` 或安装时写入服务的 `ImagePath`，
+不随打印配置热重载。默认监听 `127.0.0.1:8323`；未指定 token 时，每次启动随机生成
+32 字节并编码为 64 个小写十六进制字符。每次启动都会将当前 token 打印到日志，
+生成的值标注 `generated`，即使 `logLevel` 高于 `info` 或为 `off` 也会写入。
 
 ## 格式与错误
 
@@ -46,7 +61,7 @@ config.json: printerMap[0].rawServer.port: expected integer 1..65535
 | `minThreads.raw` | 整数 | `1` | `1`–`65535`，RAW 最小线程数。 |
 | `minThreads.lpd` | 整数 | `1` | `1`–`65535`，LPD 最小线程数。 |
 | `printerMap` | 对象数组 | `[]` | 可为空；每个对象只能包含 `name`、`lprQueue`、`rawServer`。 |
-| `printerMap[].name` | 字符串 | 无，必填 | 非空，指定本机已安装或已连接的 Windows 打印机名称；允许多条映射使用同一名称。 |
+| `printerMap[].name` | 字符串 | 无，必填 | 非空，指定本机已安装或已连接的 Windows 打印机名称；允许多条映射使用同一名称。Web 面板下拉列出本机已安装队列（不含远程连接），仍可手工输入；名称须满足 [ACP/编码限制](#编码限制)。 |
 | `printerMap[].lprQueue` | 字符串 | 无，必填 | 非空，不得包含 CR/LF，按 ASCII 字母大小写不敏感的规则全局唯一；PPM 启用时另受下文限制。 |
 | `printerMap[].rawServer` | 对象 | 省略时不启动该条 RAW 监听器 | 可选，只包含 `listenAddress`、`port`；写为 `{}` 时使用 RAW 子字段默认值。 |
 | `printerMap[].rawServer.listenAddress` | 字符串 | `"0.0.0.0"` | 合法 IPv4 地址；每条 RAW 映射独立设置。 |
@@ -92,8 +107,8 @@ config.json: printerMap[0].rawServer.port: expected integer 1..65535
 
 ## 映射与监听规则
 
-`printerMap` 为空是合法配置，包括只写 `{}` 的情况。此时不启动任何监听器，
-跳过 PPM，进程仍正常运行；不要求至少配置一个监听器。
+`printerMap` 为空是合法配置，包括只写 `{}` 的情况。此时不启动 RAW/LPD 打印监听器，
+跳过 PPM，进程仍正常运行；不要求至少配置一个打印监听器，Web 面板可独立启用。
 
 映射非空时启动一个 LPD 监听器，使用 `lpdServer.listenAddress` 和
 `lpdServer.port`。每条映射必须同时给出 `name` 和 `lprQueue`，即使客户端计划
@@ -111,7 +126,7 @@ Windows 打印机名称或共享名称推断目标。
 端口，但须关闭 PPM。LPD 只在 `printerMap` 非空时参与检查。RAW 或 LPD 绑定失败
 会阻止服务启动。
 
-PPM 启用且 `printerMap` 非空时，所有实际启动的监听器（LPD 与各 RAW）必须使用
+PPM 启用且 `printerMap` 非空时，所有实际启动的打印监听器（LPD 与各 RAW）必须使用
 同一个归一化 IPv4 地址；`0.0.0.0` 与具体地址不能混用。多地址部署必须显式设置
 `"ppmDisabled": true`，关闭后仍需通过上述端点唯一性与冲突检查。
 
@@ -156,8 +171,8 @@ LPR 队列名必须使用上述 ASCII 字符。后台打印机名称和 LPR 队�
 支持的命令形式：
 
 ```text
-PrintHub.exe [--config <path>]
-PrintHub.exe [--config <path>] --service <install|uninstall|start|stop|restart>
+PrintHub.exe [--config <path>] [--web-bind <IPv4>] [--web-port <1-65535>] [--web-token <token>]
+PrintHub.exe [--config <path>] [--web-bind <IPv4>] [--web-port <1-65535>] [--web-token <token>] --service <install|uninstall|start|stop|restart>
 PrintHub.exe --help
 PrintHub.exe --version
 ```
@@ -175,7 +190,7 @@ PrintHub.exe --version
 .\PrintHub.exe -c "C:\PrintHub\office.json" --service install
 ```
 
-服务使用安装时保存的配置路径。编辑该文件后重启，不需要重新安装：
+服务使用安装时保存的配置路径。直接编辑该文件后重启，不需要重新安装：
 
 ```powershell
 .\PrintHub.exe --service restart
@@ -206,6 +221,16 @@ PrintHub.exe --version
 `1`；帮助和版本命令退出码为 `0`。`--version` 只输出一行 `1.0.2`。
 日志保存在可执行文件旁的 `logs` 目录。
 
+三个 Web 参数支持 `--web-*=value` 等号形式，同一参数重复指定会报错；Web 端口范围
+为 `1`–`65535`，禁止 `0`。显式 token 必须为 16–256 个可打印 ASCII 字符
+（`0x21`–`0x7e`，不含空格），原样保存和使用。
+安装时把显式 Web 参数一并写入 `ImagePath`，包括显式 token 的原始字符串；省略
+`--web-token` 时不会保存 token，服务每次启动时重新生成并打印到日志。
+固定 token 与随机 token 都会出现在启动日志中；显式值还会出现在命令行和服务注册表
+配置中，应限制日志目录与服务配置的访问权限。随机模式重启后需在浏览器输入新 token，
+需要稳定值时显式指定。启用步骤、服务安装和防火墙示例见
+[Web 面板说明](web-ui.md#启用步骤)。
+
 ## 旧版迁移
 
 旧的命令行配置及服务 `ImagePath` 参数不再受支持，没有兼容层或自动迁移。
@@ -219,8 +244,9 @@ PrintHub.exe --version
 3. 在新程序目录执行 `.\PrintHub.exe --service install`，或用 `-c` 指定文件，
    然后执行 `.\PrintHub.exe --service start`。
 
-## 后续配置界面
+## Web 配置界面
 
-该 JSON 是后续 Web UI 的唯一配置来源。配置模块已提供解析、序列化和文件读写
-API；后续界面应通过这些 API 读写同一份文件，并遵循相同的校验规则。当前操作
-方式为编辑 JSON 和使用上述服务命令。
+内置 Web 面板通过 `GET /api/config` 读取当前运行配置，通过 `PUT /api/config` 提交
+完整 JSON，并使用与文件加载相同的校验规则。面板保存写回当前配置文件后热应用；
+导入 JSON 仅更新表单，点击保存才会提交。状态、日志、token 鉴权和失败回滚说明见
+[Web 面板与 HTTP API](web-ui.md)。
