@@ -109,7 +109,6 @@ private:
     CEdit m_lpdThreads;
     CEdit m_maxPendingClients;
     CEdit m_lpdMaxControlBytes;
-    CButton m_snmpReject;
     CComboBox m_logLevel;
     CEdit m_preview;
     std::vector<RawServerConfiguration> m_rawServers;

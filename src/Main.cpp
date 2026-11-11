@@ -13,7 +13,6 @@
 #include <thread>
 #include <Arguments.hpp>
 #include <NetworkRuntime.h>
-#include <SnmpRejectSession.h>
 #include <SnmpServer.h>
 #include <PpmMib.h>
 #include <PrinterMetadataCollector.h>
@@ -292,14 +291,10 @@ static RunResult mainRun(const std::function<void()>& onStarted = {}) {
 						return snmp::Respond(request, mib);
 					},
 					SnmpServer::PORT, [](int) { signalShutdown(); });
-			} else if (g_args->SnmpReject) {
-				snmpServer.emplace(g_args->ListenAddress, SnmpRejectSession::Handle,
-					SnmpServer::PORT, [](int) { signalShutdown(); });
 			}
 			if (snmpServer) {
 				snmpServer->Start();
-				spdlog::info("SNMP {} server started on {}:{}", g_args->SnmpPpm ? "PPM" : "reject",
-					g_args->ListenAddress, SnmpServer::PORT);
+				spdlog::info("SNMP PPM server started on {}:{}", g_args->ListenAddress, SnmpServer::PORT);
 			}
 			if (!g_shutdown.load()) {
 				if (onStarted) onStarted();

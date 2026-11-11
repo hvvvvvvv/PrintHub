@@ -18,7 +18,6 @@ add_executable(${EXECUTABLE_NAME}
     server/RawPrinting.cpp
     server/RawPrintSession.cpp
     server/Server.cpp
-    server/SnmpRejectSession.cpp
     server/SnmpProtocol.cpp
     server/SnmpServer.cpp
     server/TcpClient.cpp

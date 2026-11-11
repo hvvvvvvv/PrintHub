@@ -22,7 +22,6 @@ public:
     static constexpr auto ARGS_LPD_MAX_CONTROL_FILE_BYTES = "--lpd-max-control-file-bytes";
     static constexpr auto ARGS_LPD_MIN_THREADS = "--lpd-min-threads";
     static constexpr auto ARGS_LISTEN_ADDRESS = "--listen-address";
-    static constexpr auto ARGS_SNMP_REJECT = "--snmp-reject";
     static constexpr auto ARGS_SNMP_PPM = "--snmp-ppm";
     static constexpr auto ARGS_LOG_LEVEL = "--log-level";
     static constexpr auto ARGS_SERVICE = "--service";
@@ -35,7 +34,6 @@ public:
 
     static constexpr uint16_t DEFAULT_MIN_THREADS = 1;
     static constexpr uint16_t DEFAULT_LPD_PORT = 515;
-    static constexpr auto DEFAULT_SNMP_REJECT = false;
     static constexpr auto DEFAULT_SNMP_PPM = false;
     static constexpr auto DEFAULT_LISTEN_ADDRESS = "0.0.0.0";
 
@@ -55,7 +53,6 @@ public:
     uint16_t LpdPort;
     size_t LpdMaxControlFileBytes;
     std::string ListenAddress;
-    bool SnmpReject;
     bool SnmpPpm;
     int LpdMinThreads;
     ServiceLogLevel LogLevel;

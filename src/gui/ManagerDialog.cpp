@@ -66,7 +66,6 @@ BEGIN_MESSAGE_MAP(CManagerDialog, CDialogEx)
     ON_BN_CLICKED(IDC_RESTART_SERVICE, &CManagerDialog::OnRestart)
     ON_BN_CLICKED(IDC_UNINSTALL_SERVICE, &CManagerDialog::OnUninstall)
     ON_BN_CLICKED(IDC_OPEN_LOGS, &CManagerDialog::OnOpenLogs)
-    ON_BN_CLICKED(IDC_SNMP_REJECT, &CManagerDialog::OnConfigurationChanged)
     ON_EN_CHANGE(IDC_SERVICE_PATH, &CManagerDialog::OnConfigurationChanged)
     ON_EN_CHANGE(IDC_LISTEN_ADDRESS, &CManagerDialog::OnConfigurationChanged)
     ON_EN_CHANGE(IDC_RAW_THREADS, &CManagerDialog::OnConfigurationChanged)
@@ -101,7 +100,6 @@ BOOL CManagerDialog::OnInitDialog() {
     m_lpdThreads.SubclassDlgItem(IDC_LPD_THREADS, this);
     m_maxPendingClients.SubclassDlgItem(IDC_MAX_PENDING_CLIENTS, this);
     m_lpdMaxControlBytes.SubclassDlgItem(IDC_LPD_MAX_CONTROL_BYTES, this);
-    m_snmpReject.SubclassDlgItem(IDC_SNMP_REJECT, this);
     m_logLevel.SubclassDlgItem(IDC_LOG_LEVEL, this);
     m_preview.SubclassDlgItem(IDC_COMMAND_PREVIEW, this);
 
@@ -431,7 +429,7 @@ void CManagerDialog::DetachControlWrappers() {
         static_cast<CWnd*>(&m_rawList), static_cast<CWnd*>(&m_rawMappingPage), static_cast<CWnd*>(&m_lpdMappingPage),
         static_cast<CWnd*>(&m_lpdQueueName), static_cast<CWnd*>(&m_lpdPrinterName), static_cast<CWnd*>(&m_lpdQueueList),
         static_cast<CWnd*>(&m_lpdPort), static_cast<CWnd*>(&m_lpdThreads), static_cast<CWnd*>(&m_maxPendingClients),
-        static_cast<CWnd*>(&m_lpdMaxControlBytes), static_cast<CWnd*>(&m_snmpReject), static_cast<CWnd*>(&m_logLevel),
+        static_cast<CWnd*>(&m_lpdMaxControlBytes), static_cast<CWnd*>(&m_logLevel),
         static_cast<CWnd*>(&m_preview) }) {
         const HWND handle = control->GetSafeHwnd();
         if (!handle) continue;
@@ -533,7 +531,6 @@ void CManagerDialog::LoadConfiguration(const ServiceConfiguration& configuration
     m_lpdThreads.SetWindowTextW(std::to_wstring(configuration.lpdMinThreads).c_str());
     m_maxPendingClients.SetWindowTextW(std::to_wstring(configuration.maxPendingClients).c_str());
     m_lpdMaxControlBytes.SetWindowTextW(std::to_wstring(configuration.lpdMaxControlFileBytes).c_str());
-    m_snmpReject.SetCheck(configuration.snmpReject ? BST_CHECKED : BST_UNCHECKED);
     m_logLevel.SelectString(-1, ToWide(ServiceConfiguration::LogLevelToString(configuration.logLevel)).c_str());
     UpdatePreview();
 }
@@ -563,7 +560,6 @@ std::optional<ServiceConfiguration> CManagerDialog::ReadConfiguration(bool showE
         arguments.insert(arguments.end(), { "--raw-server-min-threads", ToNarrow(rawThreads.GetString()), "--max-pending-clients", ToNarrow(maxPendingClients.GetString()),
             "--lpd-port", ToNarrow(lpdPort.GetString()), "--lpd-max-control-file-bytes", ToNarrow(lpdMaxControlBytes.GetString()),
             "--listen-address", ToNarrow(listenAddress.GetString()), "--lpd-min-threads", ToNarrow(lpdThreads.GetString()), "--log-level", ToNarrow(level.GetString()) });
-        if (m_snmpReject.GetCheck() == BST_CHECKED) arguments.push_back("--snmp-reject");
         return ServiceConfiguration::Parse(arguments);
     } catch (const std::exception& error) {
         if (showErrors) AfxMessageBox((CString(L"配置无效：") + ToWide(error.what()).c_str()), MB_ICONWARNING);
@@ -716,7 +712,6 @@ void CManagerDialog::SetBusy(bool busy) {
     m_lpdThreads.EnableWindow(!busy);
     m_maxPendingClients.EnableWindow(!busy);
     m_lpdMaxControlBytes.EnableWindow(!busy);
-    m_snmpReject.EnableWindow(!busy);
     m_logLevel.EnableWindow(!busy);
     if (busy) m_status.SetWindowTextW(L"服务状态：正在执行操作...");
 }

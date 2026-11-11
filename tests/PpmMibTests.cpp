@@ -151,7 +151,6 @@ void testCaptionsAndInvalidConfiguration() {
 
     requireThrows([] { PpmMib::BuildDirectory({}); }, "Empty directory requires a configured listener");
     const std::vector<void (*)(ServiceConfiguration&)> mutations{
-        [](auto& c) { c.snmpReject = true; },
         [](auto& c) { c.lpdPort = 1515; },
         [](auto& c) { c.lpdQueues[0].queueName = "two words"; },
         [](auto& c) { c.lpdQueues[0].queueName.assign(33, 'x'); },

@@ -56,10 +56,6 @@ printhub_add_test(PrintHubSnmpProtocolTests
     SnmpProtocolTests.cpp
     ${PROJECT_SOURCE_DIR}/src/server/SnmpProtocol.cpp
 )
-printhub_add_test(PrintHubSnmpRejectSessionTests
-    SnmpRejectSessionTests.cpp
-    ${PROJECT_SOURCE_DIR}/src/server/SnmpRejectSession.cpp
-)
 
 printhub_add_test(PrintHubPpmMibTests
     PpmMibTests.cpp

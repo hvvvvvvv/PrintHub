@@ -8,7 +8,7 @@ PrintHub 是一个仅支持 Windows 的网络打印服务，可将网络客户�
 - `PrintHub.exe`：Windows 服务程序，提供 RAW 和 LPD 网络打印。
 - `PrintHubManager.exe`：需要管理员权限的本机管理面板，用于维护打印机映射并安装、
   更新和管理服务。
-- 可选的 SNMP 快速拒绝和 PPM MIB 发现功能，用于 Windows 添加标准 TCP/IP 打印机端口。
+- 可选的 SNMP PPM MIB 发现功能，用于 Windows 添加标准 TCP/IP 打印机端口。
 
 ## 下载
 
@@ -64,16 +64,6 @@ x86 版本以 Windows 7 SP1 x86 为最低目标系统。请仅在受信任网络
 .\PrintHub.exe --help
 ```
 
-## SNMP 快速拒绝
-
-Windows 的“添加标准 TCP/IP 打印机端口”向导可能会等待 SNMP 探测超时。可在服务配置中
-添加 `--snmp-reject`，让 PrintHub 在 UDP `161` 上快速响应 SNMP v1/v2c `public` 探测请求。
-
-该功能不模拟打印机。创建端口时仍应选择“通用网络卡”、使用 RAW 协议，并在创建后关闭
-“SNMP 状态已启用”。
-
-详见 [Windows SNMP 快速拒绝说明](docs/windows-snmp-reject.md)。
-
 ## SNMP PPM 发现
 
 使用 `--snmp-ppm` 可以向 Windows 标准 TCP/IP 端口监视器公布同一 IP 下的多台
@@ -83,7 +73,7 @@ Windows 的“添加标准 TCP/IP 打印机端口”向导可能会等待 SNMP �
 .\PrintHub.exe --raw-server "Office Printer:9100" --raw-server "Reports Printer:9101" --snmp-ppm
 ```
 
-SNMP 默认关闭；`--snmp-ppm` 与 `--snmp-reject` 互斥，需要放通入站 UDP `161`。
+SNMP 默认关闭；使用 `--snmp-ppm` 需要放通入站 UDP `161`。
 相同映射的发现索引在重启和参数重排后保持一致，不持久化索引。PPM LPR 使用 TCP
 `515`，队列名须为最多 `32` 字节的无空白 ASCII。PPM 还会从后端 Windows 队列
 尽力读取并缓存状态，并优先通过 Windows Bidi 自动读取真实 IEEE-1284 Device ID。
@@ -127,5 +117,4 @@ PPM 配置本轮通过 CLI 安装和更新。现有管理面板可以启动、�
 
 - [服务管理面板](docs/service-manager.md)
 - [Windows LPR 兼容性验证](docs/windows-lpr-compatibility.md)
-- [Windows SNMP 快速拒绝](docs/windows-snmp-reject.md)
 - [Windows SNMP PPM 发现](docs/windows-snmp-ppm.md)

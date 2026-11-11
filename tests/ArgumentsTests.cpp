@@ -21,7 +21,7 @@ void requireDefaultScalars(const Arguments& arguments) {
     require(arguments.MaxPendingClients == 256, "Default pending client count");
     require(arguments.LpdPort == 515 && arguments.LpdMaxControlFileBytes == 4194304, "Default LPD limits");
     require(arguments.ListenAddress == "0.0.0.0", "Default listen address");
-    require(!arguments.SnmpReject && !arguments.SnmpPpm, "Default SNMP modes");
+    require(!arguments.SnmpPpm, "Default SNMP mode");
     require(arguments.LogLevel == ServiceLogLevel::Info, "Default log level");
 }
 
@@ -57,7 +57,7 @@ void testFullParseAndRawArguments() {
         "--lpd-queue", "Queue=" + printer, "--lpd-queue", "Reports=Second",
         "--raw-server-min-threads", "2", "--max-pending-clients", "512",
         "--lpd-port", "1515", "--lpd-max-control-file-bytes", "123456",
-        "--listen-address", "127.0.0.1", "--snmp-reject", "--lpd-min-threads", "4"
+        "--listen-address", "127.0.0.1", "--lpd-min-threads", "4"
     });
     require(arguments.RawServersConfig && *arguments.RawServersConfig ==
         Arguments::RawServersConfigType{{printer, 9101}, {"Second", 9200}}, "All RAW mappings");
@@ -69,7 +69,7 @@ void testFullParseAndRawArguments() {
     require(arguments.RawServerMinThreads == 2 && arguments.MaxPendingClients == 512 &&
         arguments.LpdMinThreads == 4, "Explicit thread/client values");
     require(arguments.LpdPort == 1515 && arguments.LpdMaxControlFileBytes == 123456, "Explicit LPD values");
-    require(arguments.ListenAddress == "127.0.0.1" && arguments.SnmpReject && !arguments.SnmpPpm &&
+    require(arguments.ListenAddress == "127.0.0.1" && !arguments.SnmpPpm &&
         arguments.LogLevel == ServiceLogLevel::Warn, "Explicit address, flags and log alias");
     require(arguments.ServiceOperation == std::optional<std::string>{"install"}, "Service action");
     const std::vector<std::string> expected{
@@ -77,7 +77,7 @@ void testFullParseAndRawArguments() {
         "--lpd-queue", "Queue=" + printer, "--lpd-queue", "Reports=Second",
         "--raw-server-min-threads", "2", "--max-pending-clients", "512", "--lpd-port", "1515",
         "--lpd-max-control-file-bytes", "123456", "--listen-address", "127.0.0.1",
-        "--snmp-reject", "--lpd-min-threads", "4", "--log-level", "warn"
+        "--lpd-min-threads", "4", "--log-level", "warn"
     };
     require(arguments.GetRawArguments() == expected, "Process switches must not be persisted");
     Arguments reparsed;
@@ -96,7 +96,7 @@ void testProcessSwitchesAndSafeFailures() {
     }
     Arguments ppm;
     parse(ppm, {"--lpd-queue", "Queue=Printer", "--snmp-ppm", "--log-level", "6", "--silent"});
-    require(ppm.SnmpPpm && !ppm.SnmpReject && ppm.LogLevel == ServiceLogLevel::Off, "PPM and numeric log alias");
+    require(ppm.SnmpPpm && ppm.LogLevel == ServiceLogLevel::Off, "PPM and numeric log alias");
     require(ppm.GetRawArguments() ==
         std::vector<std::string>{"--lpd-queue", "Queue=Printer", "--snmp-ppm", "--log-level", "off"},
         "PPM canonical arguments");
@@ -106,8 +106,7 @@ void testProcessSwitchesAndSafeFailures() {
     const std::vector<std::vector<std::string>> invalid{
         {}, {"--silent"}, {"--service", "install"}, {"--service", "invalid"},
         {"--unknown"}, {"--raw-server"}, {"--raw-server", "P:0"},
-        {"--service", "stop", "--listen-address", "invalid"},
-        {"--raw-server", "P", "--snmp-ppm", "--snmp-reject"}
+        {"--service", "stop", "--listen-address", "invalid"}
     };
     for (size_t index = 0; index < invalid.size(); ++index) {
         Arguments arguments;

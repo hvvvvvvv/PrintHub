@@ -31,7 +31,7 @@ void requireSame(const ServiceConfiguration& actual, const ServiceConfiguration&
     require(actual.lpdPort == expected.lpdPort, "LPD port");
     require(actual.lpdMaxControlFileBytes == expected.lpdMaxControlFileBytes, "Control file limit");
     require(actual.listenAddress == expected.listenAddress, "Listen address");
-    require(actual.snmpReject == expected.snmpReject && actual.snmpPpm == expected.snmpPpm, "SNMP flags");
+    require(actual.snmpPpm == expected.snmpPpm, "SNMP flag");
     require(actual.lpdMinThreads == expected.lpdMinThreads, "LPD threads");
     require(actual.logLevel == expected.logLevel, "Log level");
 }
@@ -46,7 +46,7 @@ void testDefaults() {
     require(ServiceConfiguration::kDefaultLpdMaxControlFileBytes == 4194304 &&
         value.lpdMaxControlFileBytes == 4194304, "Default control limit");
     require(value.rawServers.empty() && value.lpdQueues.empty(), "Default mappings");
-    require(value.listenAddress == "0.0.0.0" && !value.snmpReject && !value.snmpPpm &&
+    require(value.listenAddress == "0.0.0.0" && !value.snmpPpm &&
         value.logLevel == ServiceLogLevel::Info, "Default address, SNMP and logging");
     requireSame(ServiceConfiguration::Parse({}, false), value);
     value.Validate(false);
@@ -58,7 +58,7 @@ void testDefaults() {
 void testFullParseAndRoundTrips() {
     const std::string unicode = "Office \u6253\u5370\u673A";
     const Arguments input{
-        "--log-level", "DeBuG", "--lpd-min-threads", "3", "--snmp-reject",
+        "--log-level", "DeBuG", "--lpd-min-threads", "3",
         "--listen-address", "192.168.1.20", "--lpd-max-control-file-bytes", "1048576",
         "--lpd-port", "1515", "--max-pending-clients", "512", "--raw-server-min-threads", "2",
         "--lpd-queue", "Office=" + unicode, "--lpd-queue", "Reports=Printer=Two",
@@ -72,7 +72,6 @@ void testFullParseAndRoundTrips() {
     expected.lpdPort = 1515;
     expected.lpdMaxControlFileBytes = 1048576;
     expected.listenAddress = "192.168.1.20";
-    expected.snmpReject = true;
     expected.lpdMinThreads = 3;
     expected.logLevel = ServiceLogLevel::Debug;
     const auto parsed = ServiceConfiguration::Parse(input);
@@ -82,7 +81,7 @@ void testFullParseAndRoundTrips() {
         "--lpd-queue", "Office=" + unicode, "--lpd-queue", "Reports=Printer=Two",
         "--raw-server-min-threads", "2", "--max-pending-clients", "512", "--lpd-port", "1515",
         "--lpd-max-control-file-bytes", "1048576", "--listen-address", "192.168.1.20",
-        "--snmp-reject", "--lpd-min-threads", "3", "--log-level", "debug"
+        "--lpd-min-threads", "3", "--log-level", "debug"
     };
     for (const auto format : {Format::Compact, Format::Explicit}) {
         require(parsed.ToArguments(format) == canonical, "Full serialization order/values");
@@ -128,11 +127,6 @@ void testSerializationDefaultsAndFlags() {
     require(value.ToArguments(Format::Explicit) == mixedExplicit, "Mixed Explicit serialization");
     requireSame(ServiceConfiguration::Parse(mixedCompact), value);
     requireSame(ServiceConfiguration::Parse(mixedExplicit), value);
-    value.snmpPpm = false;
-    value.snmpReject = true;
-    auto rejectExpected = mixedExplicit;
-    *std::find(rejectExpected.begin(), rejectExpected.end(), "--snmp-ppm") = "--snmp-reject";
-    require(value.ToArguments(Format::Explicit) == rejectExpected, "Reject flag position");
 }
 
 void testInvalidArguments() {
@@ -142,7 +136,7 @@ void testInvalidArguments() {
         {"--raw-server", ""}, {"--raw-server", ":9100"}, {"--raw-server", "P:"},
         {"--raw-server", "P:0"}, {"--raw-server", "P:9100", "--raw-server", "Q:9100"},
         {"--raw-server", "P:515", "--lpd-queue", "Q=P"},
-        {"--listen-address", "256.1.1.1"}, {"--snmp-reject", "--snmp-ppm"},
+        {"--listen-address", "256.1.1.1"},
         {"--lpd-queue", "Q=P", "--lpd-port", "1515", "--snmp-ppm"},
         {"--lpd-queue", "two words=P", "--snmp-ppm"},
         {"--lpd-queue", std::string(33, 'q') + "=P", "--snmp-ppm"},
@@ -179,7 +173,7 @@ void testInvalidArguments() {
     }
     const auto listenerless = ServiceConfiguration::Parse({"--snmp-ppm", "--lpd-port", "1515"}, false);
     require(listenerless.snmpPpm && listenerless.lpdPort == 1515, "Nondefault port allowed without LPD mappings");
-    requireThrows([] { ServiceConfiguration::Parse({"--snmp-reject"}); }, "SNMP is not a runnable print listener");
+    requireThrows([] { ServiceConfiguration::Parse({"--snmp-ppm"}); }, "SNMP PPM is not a runnable print listener");
     ServiceConfiguration::Parse({"--lpd-queue", std::string(32, 'q') + "=P", "--snmp-ppm"});
     ServiceConfiguration::Parse({"--lpd-queue", "two words=P"});
 }

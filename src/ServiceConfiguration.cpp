@@ -17,7 +17,6 @@ constexpr auto kLpdPort = "--lpd-port";
 constexpr auto kLpdMaxControlFileBytes = "--lpd-max-control-file-bytes";
 constexpr auto kLpdMinThreads = "--lpd-min-threads";
 constexpr auto kListenAddress = "--listen-address";
-constexpr auto kSnmpReject = "--snmp-reject";
 constexpr auto kSnmpPpm = "--snmp-ppm";
 constexpr auto kLogLevel = "--log-level";
 
@@ -127,8 +126,6 @@ ServiceConfiguration ServiceConfiguration::Parse(const std::vector<std::string>&
             result.lpdMinThreads = parseThreadCount(requireValue(arguments, position, kLpdMinThreads), "LPD minimum threads");
         } else if (argument == kListenAddress) {
             result.listenAddress = requireValue(arguments, position, kListenAddress);
-        } else if (argument == kSnmpReject) {
-            result.snmpReject = true;
         } else if (argument == kSnmpPpm) {
             result.snmpPpm = true;
         } else if (argument == kLogLevel) {
@@ -177,9 +174,6 @@ std::vector<std::string> ServiceConfiguration::ToArguments(ServiceConfigurationA
         result.push_back(kListenAddress);
         result.push_back(listenAddress);
     }
-    if (snmpReject) {
-        result.push_back(kSnmpReject);
-    }
     if (snmpPpm) {
         result.push_back(kSnmpPpm);
     }
@@ -195,9 +189,6 @@ std::vector<std::string> ServiceConfiguration::ToArguments(ServiceConfigurationA
 }
 
 void ServiceConfiguration::Validate(bool requireRunnableListener) const {
-    if (snmpReject && snmpPpm) {
-        throw std::invalid_argument("--snmp-reject and --snmp-ppm are mutually exclusive");
-    }
     if (rawServerMinThreads < 1 || rawServerMinThreads > UINT16_MAX ||
         lpdMinThreads < 1 || lpdMinThreads > UINT16_MAX ||
         maxPendingClients < 1 || maxPendingClients > UINT16_MAX) {

@@ -14,7 +14,6 @@
 #define IDC_RAW_LIST                1010
 #define IDC_LPD_PORT                1012
 #define IDC_LPD_THREADS             1013
-#define IDC_SNMP_REJECT             1014
 #define IDC_LOG_LEVEL               1015
 #define IDC_COMMAND_PREVIEW         1016
 #define IDC_REFRESH                 1017
