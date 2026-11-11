@@ -1,243 +1,212 @@
 #include <ServiceConfiguration.hpp>
+#include <Ipv4.h>
 
 #include "TestSupport.h"
 
-#include <Windows.h>
-#include <shellapi.h>
-
-#include <algorithm>
 #include <limits>
-#include <memory>
 #include <vector>
 
 namespace {
 
-using Format = ServiceConfigurationArgumentFormat;
-using Arguments = std::vector<std::string>;
-
-void requireSame(const ServiceConfiguration& actual, const ServiceConfiguration& expected) {
-    require(actual.rawServers.size() == expected.rawServers.size(), "RAW mapping count");
-    for (size_t index = 0; index < actual.rawServers.size(); ++index) {
-        require(actual.rawServers[index].printerName == expected.rawServers[index].printerName &&
-            actual.rawServers[index].port == expected.rawServers[index].port, "RAW mapping/order");
-    }
-    require(actual.lpdQueues.size() == expected.lpdQueues.size(), "LPD mapping count");
-    for (size_t index = 0; index < actual.lpdQueues.size(); ++index) {
-        require(actual.lpdQueues[index].queueName == expected.lpdQueues[index].queueName &&
-            actual.lpdQueues[index].printerName == expected.lpdQueues[index].printerName, "LPD mapping/order");
-    }
-    require(actual.rawServerMinThreads == expected.rawServerMinThreads, "RAW threads");
-    require(actual.maxPendingClients == expected.maxPendingClients, "Pending client limit");
-    require(actual.lpdPort == expected.lpdPort, "LPD port");
-    require(actual.lpdMaxControlFileBytes == expected.lpdMaxControlFileBytes, "Control file limit");
-    require(actual.listenAddress == expected.listenAddress, "Listen address");
-    require(actual.snmpPpm == expected.snmpPpm, "SNMP flag");
-    require(actual.lpdMinThreads == expected.lpdMinThreads, "LPD threads");
-    require(actual.logLevel == expected.logLevel, "Log level");
+ServiceConfiguration mappedConfiguration() {
+    ServiceConfiguration value;
+    value.printerMap = {{"Printer", "Queue", std::nullopt}};
+    return value;
 }
 
 void testDefaults() {
     const ServiceConfiguration value;
-    require(ServiceConfiguration::kDefaultLpdPort == 515 && value.lpdPort == 515, "Default LPD port");
-    require(ServiceConfiguration::kDefaultMinThreads == 1 && value.rawServerMinThreads == 1 &&
-        value.lpdMinThreads == 1, "Default threads");
-    require(ServiceConfiguration::kDefaultMaxPendingClients == 256 && value.maxPendingClients == 256,
+    require(value.logLevel == ServiceLogLevel::Info, "Default log level");
+    require(value.maxPendingClients == 256 && ServiceConfiguration::kDefaultMaxPendingClients == 256,
         "Default pending clients");
-    require(ServiceConfiguration::kDefaultLpdMaxControlFileBytes == 4194304 &&
-        value.lpdMaxControlFileBytes == 4194304, "Default control limit");
-    require(value.rawServers.empty() && value.lpdQueues.empty(), "Default mappings");
-    require(value.listenAddress == "0.0.0.0" && !value.snmpPpm &&
-        value.logLevel == ServiceLogLevel::Info, "Default address, SNMP and logging");
-    requireSame(ServiceConfiguration::Parse({}, false), value);
-    value.Validate(false);
-    requireThrows([&] { value.Validate(); }, "No listener must fail Validate");
-    requireThrows([] { ServiceConfiguration::Parse({}); }, "No listener must fail Parse");
-    requireThrows([&] { value.ToArguments(); }, "Serialization requires a runnable configuration");
+    require(value.lpdServer.listenAddress == "0.0.0.0" && value.lpdServer.port == 515 &&
+        ServiceConfiguration::kDefaultLpdPort == 515, "Default LPD endpoint");
+    require(value.rawServerMinThreads == 1 && value.lpdMinThreads == 1 &&
+        ServiceConfiguration::kDefaultMinThreads == 1, "Default threads");
+    require(value.printerMap.empty(), "Default mappings");
+    require(!value.ppmDisabled, "PPM must be enabled by default");
+    require(ServiceConfiguration::kDefaultLpdMaxControlFileBytes == 4 * 1024 * 1024,
+        "Fixed LPD control file limit");
+    const RawServerConfiguration raw;
+    require(raw.listenAddress == "0.0.0.0" && raw.port == 9100, "Default RAW endpoint");
+    value.Validate();
 }
 
-void testFullParseAndRoundTrips() {
-    const std::string unicode = "Office \u6253\u5370\u673A";
-    const Arguments input{
-        "--log-level", "DeBuG", "--lpd-min-threads", "3",
-        "--listen-address", "192.168.1.20", "--lpd-max-control-file-bytes", "1048576",
-        "--lpd-port", "1515", "--max-pending-clients", "512", "--raw-server-min-threads", "2",
-        "--lpd-queue", "Office=" + unicode, "--lpd-queue", "Reports=Printer=Two",
-        "--raw-server", unicode, "--raw-server", "Server:Printer:9200"
+void testValidConfigurations() {
+    auto value = mappedConfiguration();
+    value.Validate();
+    value.printerMap[0].rawServer.emplace();
+    value.Validate();
+
+    // One printer can have several queues and RAW endpoints.
+    value.ppmDisabled = true;
+    value.printerMap = {
+        {"Printer", "Queue1", RawServerConfiguration{"192.168.1.10", 9100}},
+        {"Printer", "Queue2", RawServerConfiguration{"192.168.1.11", 9100}},
     };
-    ServiceConfiguration expected;
-    expected.rawServers = {{unicode, 9100}, {"Server:Printer", 9200}};
-    expected.lpdQueues = {{"Office", unicode}, {"Reports", "Printer=Two"}};
-    expected.rawServerMinThreads = 2;
-    expected.maxPendingClients = 512;
-    expected.lpdPort = 1515;
-    expected.lpdMaxControlFileBytes = 1048576;
-    expected.listenAddress = "192.168.1.20";
-    expected.lpdMinThreads = 3;
-    expected.logLevel = ServiceLogLevel::Debug;
-    const auto parsed = ServiceConfiguration::Parse(input);
-    requireSame(parsed, expected);
-    const Arguments canonical{
-        "--raw-server", unicode + ":9100", "--raw-server", "Server:Printer:9200",
-        "--lpd-queue", "Office=" + unicode, "--lpd-queue", "Reports=Printer=Two",
-        "--raw-server-min-threads", "2", "--max-pending-clients", "512", "--lpd-port", "1515",
-        "--lpd-max-control-file-bytes", "1048576", "--listen-address", "192.168.1.20",
-        "--lpd-min-threads", "3", "--log-level", "debug"
-    };
-    for (const auto format : {Format::Compact, Format::Explicit}) {
-        require(parsed.ToArguments(format) == canonical, "Full serialization order/values");
-        requireSame(ServiceConfiguration::Parse(parsed.ToArguments(format)), expected);
+    value.Validate();
+    value.lpdServer = {"192.168.1.12", 515};
+    value.printerMap[0].rawServer->port = 515;
+    value.printerMap[1].rawServer->port = 515;
+    value.Validate();
+    value.ppmDisabled = false;
+    requireThrows([&] { value.Validate(); }, "PPM accepted listeners on different specific addresses");
+
+    ServiceConfiguration empty;
+    empty.lpdServer.port = 1515;
+    empty.Validate();
+
+    for (const int boundary : {1, 65535}) {
+        auto limits = mappedConfiguration();
+        limits.ppmDisabled = true;
+        limits.rawServerMinThreads = limits.lpdMinThreads = limits.maxPendingClients = boundary;
+        limits.lpdServer.port = static_cast<uint16_t>(boundary);
+        limits.lpdServer.listenAddress = "127.0.0.1";
+        limits.printerMap[0].rawServer = RawServerConfiguration{"127.0.0.2", static_cast<uint16_t>(boundary)};
+        limits.Validate();
     }
-    require(parsed.ToArguments() == canonical, "No-argument overload must use Compact");
-    const auto repeated = ServiceConfiguration::Parse({"--raw-server", "P", "--log-level", "warn",
-        "--log-level", "OFF", "--max-pending-clients", "3", "--max-pending-clients", "4"});
-    require(repeated.logLevel == ServiceLogLevel::Off && repeated.maxPendingClients == 4,
-        "Repeated scalar options use the last value");
 }
 
-void testSerializationDefaultsAndFlags() {
-    ServiceConfiguration value;
-    value.rawServers = {{"Printer", 9100}};
-    value.lpdQueues = {{"Queue", "Printer"}};
-    const Arguments compact{"--raw-server", "Printer:9100", "--lpd-queue", "Queue=Printer"};
-    const Arguments explicitDefaults{
-        "--raw-server", "Printer:9100", "--lpd-queue", "Queue=Printer",
-        "--raw-server-min-threads", "1", "--max-pending-clients", "256", "--lpd-port", "515",
-        "--lpd-max-control-file-bytes", "4194304", "--listen-address", "0.0.0.0",
-        "--lpd-min-threads", "1", "--log-level", "info"
-    };
-    require(value.ToArguments() == compact, "Compact must omit defaults and false flags");
-    require(value.ToArguments(Format::Explicit) == explicitDefaults, "Explicit must emit every scalar default");
-    for (const auto format : {Format::Compact, Format::Explicit}) {
-        requireSame(ServiceConfiguration::Parse(value.ToArguments(format)), value);
-    }
-    value.snmpPpm = true;
-    value.maxPendingClients = 17;
-    value.logLevel = ServiceLogLevel::Off;
-    const Arguments mixedCompact{
-        "--raw-server", "Printer:9100", "--lpd-queue", "Queue=Printer",
-        "--max-pending-clients", "17", "--snmp-ppm", "--log-level", "off"
-    };
-    const Arguments mixedExplicit{
-        "--raw-server", "Printer:9100", "--lpd-queue", "Queue=Printer",
-        "--raw-server-min-threads", "1", "--max-pending-clients", "17", "--lpd-port", "515",
-        "--lpd-max-control-file-bytes", "4194304", "--listen-address", "0.0.0.0",
-        "--snmp-ppm", "--lpd-min-threads", "1", "--log-level", "off"
-    };
-    require(value.ToArguments() == mixedCompact, "Mixed Compact serialization");
-    require(value.ToArguments(Format::Explicit) == mixedExplicit, "Mixed Explicit serialization");
-    requireSame(ServiceConfiguration::Parse(mixedCompact), value);
-    requireSame(ServiceConfiguration::Parse(mixedExplicit), value);
-}
-
-void testInvalidArguments() {
-    const std::vector<Arguments> invalid{
-        {"--lpd-queue", "Queue"}, {"--lpd-queue", "=Printer"}, {"--lpd-queue", "Queue="},
-        {"--lpd-queue", "Office=P", "--lpd-queue", "oFFICE=Q"},
-        {"--raw-server", ""}, {"--raw-server", ":9100"}, {"--raw-server", "P:"},
-        {"--raw-server", "P:0"}, {"--raw-server", "P:9100", "--raw-server", "Q:9100"},
-        {"--raw-server", "P:515", "--lpd-queue", "Q=P"},
-        {"--listen-address", "256.1.1.1"},
-        {"--lpd-queue", "Q=P", "--lpd-port", "1515", "--snmp-ppm"},
-        {"--lpd-queue", "two words=P", "--snmp-ppm"},
-        {"--lpd-queue", std::string(33, 'q') + "=P", "--snmp-ppm"},
-        {"--lpd-queue", "\u6253=P", "--snmp-ppm"},
-        {"--log-level", "verbose"}, {"--unknown"}, {"--lpd-disable"},
-        {"--service", "install"}, {"--service", "stop"}, {"--silent"}, {"--help"}, {"--version"}
-    };
-    for (size_t index = 0; index < invalid.size(); ++index) {
-        runTest("invalid argument case " + std::to_string(index), [&] {
-            for (const bool runnable : {false, true}) {
-                requireThrows([&] { ServiceConfiguration::Parse(invalid[index], runnable); },
-                    "Invalid configuration accepted (including with listener check disabled)");
-            }
-        });
-    }
-    for (const auto* option : {"--raw-server", "--lpd-queue", "--raw-server-min-threads",
-        "--max-pending-clients", "--lpd-port", "--lpd-max-control-file-bytes",
-        "--lpd-min-threads", "--listen-address", "--log-level"}) {
-        requireThrows([&] { ServiceConfiguration::Parse({option}, false); }, "Missing option value accepted");
-    }
-    for (const auto* option : {"--raw-server-min-threads", "--lpd-min-threads", "--max-pending-clients", "--lpd-port"}) {
-        for (const auto* bad : {"", "0", "-1", "+1", "65536", "1x", " 1", "1 ", "18446744073709551616"}) {
-            requireThrows([&] { ServiceConfiguration::Parse({option, bad}, false); },
-                std::string(option) + " accepted " + bad);
-        }
-    }
-    for (const auto* bad : {"", "0", "-1", "+1", "65536", "1x", " 1", "1 "}) {
-        requireThrows([&] { ServiceConfiguration::Parse({"--raw-server", std::string("P:") + bad}, false); },
-            "Bad RAW port accepted");
-    }
-    for (const auto* bad : {"", "0", "-1", "+1", "1x", " 1", "1 ", "18446744073709551616"}) {
-        requireThrows([&] { ServiceConfiguration::Parse({"--lpd-max-control-file-bytes", bad}, false); },
-            "Bad control byte count accepted");
-    }
-    const auto listenerless = ServiceConfiguration::Parse({"--snmp-ppm", "--lpd-port", "1515"}, false);
-    require(listenerless.snmpPpm && listenerless.lpdPort == 1515, "Nondefault port allowed without LPD mappings");
-    requireThrows([] { ServiceConfiguration::Parse({"--snmp-ppm"}); }, "SNMP PPM is not a runnable print listener");
-    ServiceConfiguration::Parse({"--lpd-queue", std::string(32, 'q') + "=P", "--snmp-ppm"});
-    ServiceConfiguration::Parse({"--lpd-queue", "two words=P"});
-}
-
-void testNumericBoundariesAndValidate() {
-    for (const auto* limit : {"1", "65535"}) {
-        const auto parsed = ServiceConfiguration::Parse({"--raw-server", std::string("P:") + limit,
-            "--raw-server-min-threads", limit, "--lpd-min-threads", limit,
-            "--max-pending-clients", limit, "--lpd-port", limit});
-        const auto number = std::stoi(limit);
-        require(parsed.rawServers[0].port == number && parsed.lpdPort == number &&
-            parsed.rawServerMinThreads == number && parsed.lpdMinThreads == number &&
-            parsed.maxPendingClients == number, "Numeric boundary changed");
-    }
-    const auto maximum = (std::numeric_limits<size_t>::max)();
-    for (const auto limit : {size_t{1}, maximum}) {
-        const auto parsed = ServiceConfiguration::Parse({"--lpd-max-control-file-bytes", std::to_string(limit)}, false);
-        require(parsed.lpdMaxControlFileBytes == limit, "size_t control limit boundary");
-        parsed.Validate(false);
-    }
-    if constexpr (sizeof(size_t) < sizeof(uint64_t)) {
-        requireThrows([] { ServiceConfiguration::Parse({"--lpd-max-control-file-bytes", "4294967296"}, false); },
-            "x86 must reject a control limit above SIZE_MAX");
-    } else {
-        require(ServiceConfiguration::Parse({"--lpd-max-control-file-bytes", "4294967296"}, false)
-            .lpdMaxControlFileBytes == uint64_t{4294967296}, "x64 control limit must not truncate");
-    }
-
-    const std::vector<void (*)(ServiceConfiguration&)> mutations{
-        [](auto& c) { c.rawServerMinThreads = 0; }, [](auto& c) { c.rawServerMinThreads = -1; },
-        [](auto& c) { c.lpdMinThreads = 0; }, [](auto& c) { c.maxPendingClients = -1; },
-        [](auto& c) { c.lpdPort = 0; }, [](auto& c) { c.lpdMaxControlFileBytes = 0; },
-        [](auto& c) { c.rawServers[0].port = 0; }, [](auto& c) { c.rawServers[0].printerName.clear(); },
-        [](auto& c) { c.lpdQueues = {{"", "P"}}; }, [](auto& c) { c.lpdQueues = {{"Q", ""}}; },
-        [](auto& c) { c.lpdQueues = {{"Q=R", "P"}}; }
-    };
-    for (const auto mutate : mutations) {
-        ServiceConfiguration value;
-        value.rawServers = {{"P", 9100}};
-        mutate(value);
-        requireThrows([&] { value.Validate(false); }, "Validate(false) skipped a non-listener invariant");
-    }
+void testInvalidValues() {
     for (const auto field : {&ServiceConfiguration::rawServerMinThreads,
         &ServiceConfiguration::lpdMinThreads, &ServiceConfiguration::maxPendingClients}) {
-        for (const auto limit : {65536, (std::numeric_limits<int>::max)()}) {
+        for (const int invalid : {0, -1, 65536, (std::numeric_limits<int>::max)()}) {
             ServiceConfiguration value;
-            value.rawServers = {{"P", 9100}};
-            value.*field = limit;
-            requireThrows([&] { value.Validate(); }, "Validate accepted an integer above UINT16_MAX");
-            requireThrows([&] { value.Validate(false); }, "Validate(false) skipped the integer upper bound");
-            requireThrows([&] { value.ToArguments(); }, "Compact serialization accepted an oversized integer");
-            requireThrows([&] { value.ToArguments(Format::Explicit); },
-                "Explicit serialization accepted an oversized integer");
+            value.*field = invalid;
+            requireThrows([&] { value.Validate(); }, "Invalid thread/client count accepted");
         }
     }
-    ServiceConfiguration upper;
-    upper.rawServers = {{"P", 65535}};
-    upper.rawServerMinThreads = upper.lpdMinThreads = upper.maxPendingClients = 65535;
-    upper.Validate();
-    requireSame(ServiceConfiguration::Parse(upper.ToArguments()), upper);
-    requireSame(ServiceConfiguration::Parse(upper.ToArguments(Format::Explicit)), upper);
+    for (const auto field : {&PrinterMapping::name, &PrinterMapping::lprQueue}) {
+        for (const auto& invalid : {std::string{}, std::string("a\0b", 3)}) {
+            auto value = mappedConfiguration();
+            value.printerMap[0].*field = invalid;
+            requireThrows([&] { value.Validate(); }, "Empty or NUL-containing mapping accepted");
+            value.ppmDisabled = true;
+            requireThrows([&] { value.Validate(); }, "PPM opt-out bypassed a mapping invariant");
+        }
+    }
+    for (const auto& invalid : std::vector<std::string>{"", "256.1.1.1", "not-an-address",
+        "::1", std::string("127.0.0.1\0", 10)}) {
+        ServiceConfiguration lpd;
+        lpd.lpdServer.listenAddress = invalid;
+        requireThrows([&] { lpd.Validate(); }, "Invalid LPD address accepted without mappings");
+        auto raw = mappedConfiguration();
+        raw.printerMap[0].rawServer = RawServerConfiguration{invalid, 9100};
+        requireThrows([&] { raw.Validate(); }, "Invalid RAW address accepted");
+    }
+    ServiceConfiguration lpd;
+    lpd.lpdServer.port = 0;
+    requireThrows([&] { lpd.Validate(); }, "Zero LPD port accepted");
+    auto raw = mappedConfiguration();
+    raw.printerMap[0].rawServer = RawServerConfiguration{"0.0.0.0", 0};
+    requireThrows([&] { raw.Validate(); }, "Zero RAW port accepted");
+
+    auto duplicate = mappedConfiguration();
+    duplicate.printerMap.push_back({"Other Printer", "qUEUE", std::nullopt});
+    requireThrows([&] { duplicate.Validate(); }, "Case-insensitive duplicate queue accepted");
 }
 
-void testIpv4AndLogLevels() {
+void testListenerConflicts() {
+    for (const auto& addresses : std::vector<std::pair<std::string, std::string>>{
+        {"0.0.0.0", "0.0.0.0"}, {"127.0.0.1", "127.0.0.1"},
+        {"001.002.003.004", "1.2.3.4"}, {"000.000.000.000", "0.0.0.0"},
+        {"0.0.0.0", "127.0.0.1"}, {"127.0.0.1", "0.0.0.0"}}) {
+        ServiceConfiguration raw;
+        raw.printerMap = {
+            {"Printer", "Queue1", RawServerConfiguration{addresses.first, 9100}},
+            {"Printer", "Queue2", RawServerConfiguration{addresses.second, 9100}},
+        };
+        requireThrows([&] { raw.Validate(); }, "Conflicting RAW listeners accepted");
+
+        auto lpd = mappedConfiguration();
+        lpd.lpdServer.listenAddress = addresses.first;
+        lpd.printerMap[0].rawServer = RawServerConfiguration{addresses.second, 515};
+        requireThrows([&] { lpd.Validate(); }, "Conflicting LPD and RAW listeners accepted");
+    }
+
+    auto conflict = mappedConfiguration();
+    conflict.printerMap[0].rawServer = RawServerConfiguration{"0.0.0.0", 515};
+    try {
+        conflict.Validate();
+        throw std::runtime_error("Expected LPD/RAW conflict");
+    } catch (const std::invalid_argument& error) {
+        const std::string message = error.what();
+        require(message.find("printerMap[0].rawServer") != std::string::npos &&
+            message.find("LPD server") != std::string::npos &&
+            message.find("0.0.0.0:515") != std::string::npos, "Conflict diagnostic lacks listener details");
+    }
+}
+
+void testPpmRules() {
+    for (const auto& queue : std::vector<std::string>{"two words", std::string(33, 'q'),
+        "Q=R", "Q\tR", std::string("Q\x1f", 2), std::string("Q\x7f", 2),
+        std::string(1, static_cast<char>(0x80))}) {
+        auto value = mappedConfiguration();
+        value.printerMap[0].lprQueue = queue;
+        requireThrows([&] { value.Validate(); }, "Invalid PPM queue accepted");
+        value.ppmDisabled = true;
+        value.lpdServer.port = 1515;
+        value.Validate();
+    }
+    for (const auto* queue : {"Q\rR", "Q\nR", "Q\r\nR"}) {
+        auto value = mappedConfiguration();
+        value.printerMap[0].lprQueue = queue;
+        for (const auto disabled : {false, true}) {
+            value.ppmDisabled = disabled;
+            requireThrows([&] { value.Validate(); }, "CR/LF in LPR queues must be rejected regardless of PPM");
+        }
+    }
+    auto valid = mappedConfiguration();
+    valid.printerMap[0].lprQueue = std::string(32, 'q');
+    valid.Validate();
+    valid.printerMap[0].lprQueue = "!~";
+    valid.Validate();
+
+    auto port = mappedConfiguration();
+    port.lpdServer.port = 1515;
+    try {
+        port.Validate();
+        throw std::runtime_error("PPM accepted a nonstandard LPD port");
+    } catch (const std::invalid_argument& error) {
+        require(std::string(error.what()).find("ppmDisabled=true") != std::string::npos,
+            "PPM port error must explain the opt-out");
+    }
+    port.ppmDisabled = true;
+    port.Validate();
+}
+
+void testPpmListenAddresses() {
+    auto value = mappedConfiguration();
+    value.lpdServer.listenAddress = "127.0.0.1";
+    value.printerMap = {
+        {"Printer", "Queue1", RawServerConfiguration{"127.0.0.1", 9100}},
+        {"Printer", "Queue2", RawServerConfiguration{"127.0.0.1", 9101}},
+        {"Other Printer", "Queue3", std::nullopt},
+    };
+    value.Validate();
+    value.printerMap[1].rawServer->listenAddress = "127.000.000.001";
+    value.Validate();
+
+    value.lpdServer.listenAddress = "0.0.0.0";
+    value.printerMap[0].rawServer->listenAddress = "0.0.0.0";
+    try {
+        value.Validate();
+        throw std::runtime_error("PPM accepted wildcard and specific listener addresses");
+    } catch (const std::invalid_argument& error) {
+        const std::string message = error.what();
+        require(message.find("printerMap[1].rawServer.listenAddress") != std::string::npos &&
+            message.find("ppmDisabled=true") != std::string::npos,
+            "PPM address diagnostic must identify the mismatched field and explain the opt-out");
+    }
+    value.ppmDisabled = true;
+    value.Validate();
+}
+
+void testIpv4Addresses() {
+    require(ParseIpv4Address("001.002.003.004") == ParseIpv4Address("1.2.3.4"),
+        "Leading-zero IPv4 octets must be decimal");
+    require(ParseIpv4Address("1.2.3.4") == std::optional<uint32_t>{0x01020304u},
+        "IPv4 parser must return the host-order address");
     for (const auto* valid : {"0.0.0.0", "255.255.255.255", "127.0.0.1", "1.2.3.4", "001.002.003.004"}) {
         require(ServiceConfiguration::IsIpv4Address(valid), std::string("Valid IPv4 rejected: ") + valid);
     }
@@ -246,27 +215,25 @@ void testIpv4AndLogLevels() {
         "1.2.3.\t", "a.2.3.4", "::1", std::string("1.2.3.4\0", 8)}) {
         require(!ServiceConfiguration::IsIpv4Address(invalid), "Invalid IPv4 accepted");
     }
+}
+
+void testLogLevels() {
     const std::vector<std::pair<ServiceLogLevel, std::string>> levels{
         {ServiceLogLevel::Trace, "trace"}, {ServiceLogLevel::Debug, "debug"}, {ServiceLogLevel::Info, "info"},
         {ServiceLogLevel::Warn, "warn"}, {ServiceLogLevel::Error, "error"},
         {ServiceLogLevel::Critical, "critical"}, {ServiceLogLevel::Off, "off"}
     };
-    for (size_t index = 0; index < levels.size(); ++index) {
-        const auto& [level, name] = levels[index];
+    for (const auto& [level, name] : levels) {
         auto uppercase = name;
         for (auto& ch : uppercase) ch = static_cast<char>(ch - 'a' + 'A');
+        auto mixed = name;
+        mixed.front() = uppercase.front();
         require(ServiceConfiguration::LogLevelToString(level) == name, "Log level spelling");
         require(ServiceConfiguration::ParseLogLevel(name) == level &&
             ServiceConfiguration::ParseLogLevel(uppercase) == level &&
-            ServiceConfiguration::ParseLogLevel(std::to_string(index)) == level, "Log level alias parsing");
-        ServiceConfiguration config;
-        config.rawServers = {{"P", 9100}};
-        config.logLevel = level;
-        const auto args = config.ToArguments(Format::Explicit);
-        require(args[args.size() - 2] == "--log-level" && args.back() == name, "Serialized log level text");
+            ServiceConfiguration::ParseLogLevel(mixed) == level, "Case-insensitive log level parsing");
     }
-    require(ServiceConfiguration::ParseLogLevel("WaRnInG") == ServiceLogLevel::Warn, "warning alias");
-    for (const auto* invalid : {"", "7", "-1", " info", "info ", "verbose", "00"}) {
+    for (const auto* invalid : {"", "0", "6", "warning", "WaRnInG", "verbose", "7", "-1", " info", "info ", "00"}) {
         requireThrows([&] { ServiceConfiguration::ParseLogLevel(invalid); }, "Invalid log level accepted");
     }
     requireThrows([] { ServiceConfiguration::LogLevelToString(static_cast<ServiceLogLevel>(99)); }, "Unknown enum accepted");
@@ -282,56 +249,19 @@ void testQueueResolution() {
     require(!ResolveLpdQueuePrinter({}, "Sales"), "Empty mapping lookup");
 }
 
-void testWindowsQuoting() {
-    const std::vector<std::pair<std::wstring, std::wstring>> examples{
-        {L"plain", L"plain"}, {L"", L"\"\""}, {L"two words", L"\"two words\""},
-        {L"a\tb", L"\"a\tb\""}, {L"a\"b", L"\"a\\\"b\""},
-        {L"path\\", L"path\\"}, {L"two words\\", L"\"two words\\\\\""},
-        {L"\u6253\u5370\u673A", L"\u6253\u5370\u673A"},
-        {L"Office \u6253\u5370\u673A", L"\"Office \u6253\u5370\u673A\""}
-    };
-    for (const auto& [input, expected] : examples) {
-        require(QuoteWindowsCommandLineArgument(input) == expected, "Exact Windows argument quoting");
-    }
-    for (size_t count = 0; count < 5; ++count) {
-        const auto input = L"a" + std::wstring(count, L'\\') + L"\"b";
-        const auto expected = L"\"a" + std::wstring(count * 2 + 1, L'\\') + L"\"b\"";
-        require(QuoteWindowsCommandLineArgument(input) == expected, "Backslashes immediately before a quote");
-    }
-    require(BuildWindowsCommandLine({}).empty(), "Empty argument vector");
-    require(BuildWindowsCommandLine({L"tool.exe", L"", L"two words", L"tail\\"}) ==
-        L"tool.exe \"\" \"two words\" tail\\", "Exact command line spacing");
-
-    // argv[0] has special Windows parsing rules; use a normal synthetic name.
-    std::vector<std::wstring> arguments{L"test tool.exe"};
-    for (const auto& [input, expected] : examples) arguments.push_back(input);
-    arguments.push_back(L"a\\\\\"quoted\\");
-    const auto command = BuildWindowsCommandLine(arguments);
-    int count = 0;
-    auto* parsed = CommandLineToArgvW(command.c_str(), &count);
-    require(parsed != nullptr, "CommandLineToArgvW failed");
-    struct LocalArgvDeleter {
-        void operator()(wchar_t** value) const { LocalFree(value); }
-    };
-    const std::unique_ptr<wchar_t*, LocalArgvDeleter> owner(parsed);
-    require(count == static_cast<int>(arguments.size()), "Windows round-trip argument count");
-    for (int index = 0; index < count; ++index) {
-        require(arguments[static_cast<size_t>(index)] == parsed[index], "Windows round-trip argument bytes");
-    }
-}
-
 } // namespace
 
 int main() {
     try {
         runTest("defaults", testDefaults);
-        runTest("full parse and round trips", testFullParseAndRoundTrips);
-        runTest("serialization defaults and flags", testSerializationDefaultsAndFlags);
-        runTest("invalid arguments", testInvalidArguments);
-        runTest("numeric boundaries and Validate", testNumericBoundariesAndValidate);
-        runTest("IPv4 and log levels", testIpv4AndLogLevels);
+        runTest("valid configurations", testValidConfigurations);
+        runTest("invalid values", testInvalidValues);
+        runTest("listener conflicts", testListenerConflicts);
+        runTest("PPM rules", testPpmRules);
+        runTest("PPM listen addresses", testPpmListenAddresses);
+        runTest("IPv4 addresses", testIpv4Addresses);
+        runTest("log levels", testLogLevels);
         runTest("queue resolution", testQueueResolution);
-        runTest("Windows quoting", testWindowsQuoting);
     } catch (const std::exception& error) {
         std::cerr << "Configuration tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;

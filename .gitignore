@@ -16,6 +16,9 @@ cmake_install.cmake
 CTestTestfile.cmake
 Testing/
 
+# Local runtime configuration
+/config.json
+
 # Native build and diagnostic artifacts
 *.exe
 *.dll

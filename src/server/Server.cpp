@@ -1,4 +1,5 @@
 #include <Server.h>
+#include <Ipv4.h>
 #include <spdlog/spdlog.h>
 
 #pragma warning(disable:4996)
@@ -6,7 +7,6 @@
 namespace {
 
 constexpr int kSocketOptionEnabled = 1;
-constexpr int kInetPtonSuccess = 1;
 
 } // namespace
 
@@ -27,9 +27,11 @@ PrintServer::~PrintServer() {
 }
 
 void PrintServer::SetListenAddr(const std::string& addr) {
-    if (inet_pton(AF_INET, addr.c_str(), &m_listenAddr.sin_addr) != kInetPtonSuccess) {
+    const auto value = ParseIpv4Address(addr);
+    if (!value) {
         throw std::invalid_argument("Invalid IPv4 listen address");
     }
+    m_listenAddr.sin_addr.s_addr = htonl(*value);
 }
 
 void PrintServer::SetListenPort(uint16_t port) {

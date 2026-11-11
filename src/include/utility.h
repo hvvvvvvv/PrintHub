@@ -8,6 +8,7 @@
 #include <charconv>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <winsvc.h>
 
 namespace utility {
@@ -30,17 +31,23 @@ namespace utility {
 		return std::nullopt;  // 转换失败
 	}
 
-	inline std::filesystem::path getExecutablePath() {
-		CHAR path[MAX_PATH];
-		const auto length = GetModuleFileNameA(nullptr, path, MAX_PATH);
-		if (length == 0 || length >= MAX_PATH) {
-			return std::filesystem::current_path();
+	inline std::filesystem::path getExecutablePathW() {
+		std::vector<wchar_t> path(MAX_PATH);
+		for (;;) {
+			const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+			if (length == 0) {
+				const auto error = GetLastError();
+				throw std::runtime_error("Failed to get executable path (Win32 error " + std::to_string(error) + ")");
+			}
+			if (length < path.size()) {
+				return std::filesystem::path(std::wstring(path.data(), length));
+			}
+			if (path.size() > MAXDWORD / 2 || path.size() > path.max_size() / 2) {
+				throw std::runtime_error("Failed to get executable path (Win32 error " +
+					std::to_string(ERROR_INSUFFICIENT_BUFFER) + ")");
+			}
+			path.resize(path.size() * 2);
 		}
-		return std::filesystem::path(std::string(path, length));
-	}
-
-	inline std::filesystem::path getExecutableDirectory() {
-		return getExecutablePath().parent_path();
 	}
 
 	inline bool IsRunAsAdmin() {
@@ -63,10 +70,10 @@ namespace utility {
 	class ServiceManager {		
 		public:
 			struct InstallArgs {
-				std::string binaryPath;
-				std::vector<std::string> arguments;
-				std::vector<std::string> dependencies;
-				std::optional<std::string> displayName;
+				std::filesystem::path binaryPath;
+				std::vector<std::wstring> arguments;
+				std::vector<std::wstring> dependencies;
+				std::optional<std::wstring> displayName;
 			};
 			ServiceManager(const std::string& serviceName);
 			ServiceManager() = delete;

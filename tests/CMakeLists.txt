@@ -1,4 +1,4 @@
-# Keep every suite independent of the GUI, listeners and real printer backends.
+# Keep every suite independent of the listeners and real printer backends.
 function(printhub_add_test target)
     add_executable(${target} ${ARGN})
     target_include_directories(${target} PRIVATE ${PROJECT_SOURCE_DIR}/src/include)
@@ -15,26 +15,25 @@ function(printhub_add_test target)
     set_tests_properties(${target} PROPERTIES TIMEOUT 5)
 endfunction()
 
+find_package(nlohmann_json CONFIG REQUIRED)
+
 printhub_add_test(PrintHubConfigurationTests
     ServiceConfigurationTests.cpp
     ${PROJECT_SOURCE_DIR}/src/ServiceConfiguration.cpp
 )
-target_link_libraries(PrintHubConfigurationTests PRIVATE shell32)
 
-printhub_add_test(PrintHubManagerCommandsTests
-    ManagerCommandsTests.cpp
-    ${PROJECT_SOURCE_DIR}/src/ManagerCommands.cpp
+printhub_add_test(PrintHubConfigurationFileTests
+    ConfigurationFileTests.cpp
+    ${PROJECT_SOURCE_DIR}/src/ConfigurationFile.cpp
     ${PROJECT_SOURCE_DIR}/src/ServiceConfiguration.cpp
 )
+target_link_libraries(PrintHubConfigurationFileTests PRIVATE nlohmann_json::nlohmann_json)
 
-printhub_add_test(PrintHubArgumentsTests
-    ArgumentsTests.cpp
-    ${PROJECT_SOURCE_DIR}/src/Arguments.cpp
-    ${PROJECT_SOURCE_DIR}/src/ServiceConfiguration.cpp
+printhub_add_test(PrintHubCommandLineTests
+    CommandLineTests.cpp
+    ${PROJECT_SOURCE_DIR}/src/CommandLine.cpp
 )
-# src/CMakeLists.txt already configures this header before adding tests.
-target_include_directories(PrintHubArgumentsTests PRIVATE ${PROJECT_BINARY_DIR}/src/generated)
-target_link_libraries(PrintHubArgumentsTests PRIVATE spdlog::spdlog)
+target_link_libraries(PrintHubCommandLineTests PRIVATE shell32)
 
 printhub_add_test(PrintHubAsciiTextTests AsciiTextTests.cpp)
 printhub_add_test(PrintHubBoundedQueueTests BoundedQueueTests.cpp)

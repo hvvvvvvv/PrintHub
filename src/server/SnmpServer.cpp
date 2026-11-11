@@ -1,5 +1,6 @@
 #include <SnmpServer.h>
 
+#include <Ipv4.h>
 #include <SnmpProtocol.h>
 
 #include <array>
@@ -44,9 +45,11 @@ void SnmpServer::Start() {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(m_port);
-    if (inet_pton(AF_INET, m_listenAddress.c_str(), &address.sin_addr) != 1) {
+    const auto value = ParseIpv4Address(m_listenAddress);
+    if (!value) {
         throw std::invalid_argument("Invalid IPv4 listen address for SNMP server");
     }
+    address.sin_addr.s_addr = htonl(*value);
     if (bind(socket.get(), reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
         throw std::system_error(WSAGetLastError(), std::system_category(),
             "Failed to bind SNMP server to " + m_listenAddress + ":" + std::to_string(m_port));

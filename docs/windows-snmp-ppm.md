@@ -1,47 +1,88 @@
 # Windows 标准 TCP/IP 端口发现：PPM MIB
 
-`--snmp-ppm` 将启动配置中的 Windows 打印机和 RAW/LPR 端口公布为只读
+PrintHub 根据 JSON 配置文件的 `printerMap`，将 Windows 打印机和 RAW/LPR 端口公布为只读
 Printer Port Monitor MIB（PPM MIB）。Windows 标准 TCP/IP 端口监视器可以读取
 这份目录，并在有多个可用端口时让用户选择，再填入对应的协议和目标端口。
 
-SNMP 默认关闭。启用 `--snmp-ppm` 后，PrintHub 通过 UDP `161` 提供发现目录。
+`ppmDisabled` 缺省为 `false`，即默认开启 PPM；设置 `"ppmDisabled": true`
+可关闭。映射非空且 PPM 启用时，SNMP 监听与打印监听器相同的地址（默认
+`0.0.0.0`），UDP 端口为 `161`。配置字段和完整默认值见[配置文件说明](configuration.md)。
 
 ## 启动和安装
 
-下面的打印机名称必须替换为 PrintHub 主机上实际安装或已连接的 Windows 打印机名称。
+将下面任一示例保存为 UTF-8 的 `config.json`，或将相应字段写入已有配置。
+打印机名称必须替换为 PrintHub 主机上实际安装或已连接的 Windows 打印机名称。
+省略的字段采用默认值，包括 LPD 地址 `0.0.0.0` 和 TCP 端口 `515`。
 
-同一 IP 提供两台 RAW 打印机：
+同一 IP 提供两台打印机，每条映射同时提供 RAW 与 LPR：
 
-```powershell
-.\PrintHub.exe --raw-server "Office Printer:9100" --raw-server "Reports Printer:9101" --snmp-ppm
+```json
+{
+  "printerMap": [
+    {
+      "name": "Office Printer",
+      "lprQueue": "office",
+      "rawServer": {
+        "listenAddress": "0.0.0.0",
+        "port": 9100
+      }
+    },
+    {
+      "name": "Reports Printer",
+      "lprQueue": "reports",
+      "rawServer": {
+        "listenAddress": "0.0.0.0",
+        "port": 9101
+      }
+    }
+  ],
+  "ppmDisabled": false
+}
 ```
 
-同时公布 RAW 与 LPR：
+仅提供 LPR 时省略 `rawServer`；每条映射的 `lprQueue` 始终必填：
 
-```powershell
-.\PrintHub.exe --raw-server "Office Printer:9100" --lpd-queue "office=Office Printer" --lpd-queue "reports=Reports Printer" --snmp-ppm
+```json
+{
+  "printerMap": [
+    {
+      "name": "Office Printer",
+      "lprQueue": "office"
+    },
+    {
+      "name": "Reports Printer",
+      "lprQueue": "reports"
+    }
+  ],
+  "ppmDisabled": false
+}
 ```
 
 在管理员 PowerShell 中安装并启动服务：
 
 ```powershell
-.\PrintHub.exe --raw-server "Office Printer:9100" --raw-server "Reports Printer:9101" --snmp-ppm --service install
+.\PrintHub.exe --config .\config.json --service install
 .\PrintHub.exe --service start
 ```
 
-本轮只支持通过 CLI 安装和更新 PPM 配置。更新已安装服务时，先执行
-`--service stop` 和 `--service uninstall`，再带完整的新映射、监听设置及
-`--snmp-ppm` 执行 `--service install`，最后执行 `--service start`。
-未带入安装命令的旧配置不会自动保留。
+安装时会将配置文件的绝对路径写入服务 `ImagePath`。之后修改该文件，再执行
+`.\PrintHub.exe --service restart` 即可更新映射和 PPM 设置，无需重新安装。
 
-现有 `PrintHubManager.exe` 可以启动、停止和重启 PPM 服务，但没有 PPM 选项。
-面板“安装/更新”会重新生成配置并丢失 `--snmp-ppm`，所以不要用它覆盖 PPM 服务配置。
+从使用旧命令行配置的版本升级时，需先停止、卸载旧服务，准备新 JSON 配置后再
+安装并启动；步骤见[旧版迁移](configuration.md#旧版迁移)。
 
 ## 监听和 Windows 端口设置
 
-PPM 在与 RAW/LPD 相同的 `--listen-address` 上监听 UDP `161`；默认地址为
-`0.0.0.0`。只有配置了至少一条 RAW 或 LPD 映射时才能启动。若 UDP `161`
-被 Windows SNMP Service 或其他程序占用，PrintHub 会明确启动失败。
+LPD 使用 `lpdServer.listenAddress`，每个 RAW 监听器使用各自的
+`printerMap[].rawServer.listenAddress`，缺省均为 `0.0.0.0`。PPM 启用且映射非空时，
+所有实际启动的 LPD/RAW 监听器必须使用同一个归一化 IPv4 地址，不能混用
+`0.0.0.0` 与具体地址。SNMP 绑定该共同地址的 UDP `161`，确保目录中公布的打印
+端口在 SNMP 应答接口上可达。多地址部署必须设置 `"ppmDisabled": true`，并满足
+配置中的端点唯一性与冲突规则。`printerMap` 为空时不启动任何监听器、跳过 PPM，
+进程仍正常运行。
+
+若 UDP `161` 被 Windows SNMP Service 或其他程序占用，PPM 启动失败只会记录
+error 日志，不阻止打印服务启动；RAW/LPD 绑定失败仍会阻止启动。
 
 Windows 防火墙需要放通入站 UDP `161`，以及实际使用的 RAW TCP 端口或 LPR
 TCP `515`。SNMP 负责提供目录，打印数据仍经所选 RAW/LPR 监听器传输。
@@ -73,16 +114,19 @@ TCP `515`。SNMP 负责提供目录，打印数据仍经所选 RAW/LPR 监听器
   队列名排列；`ppmPortIndex` 在该打印机内从 `1` 开始分配。
 - 第一个端口为首选端口：优先最小 RAW 端口；没有 RAW 时选第一个 LPR 队列。
 
-相同映射在重启后编号相同；调整启动参数排列顺序不会改变编号。
+相同映射在重启后编号相同；调整配置文件中的映射排列顺序不会改变编号。
 增删映射、重命名打印队列或改变端口可能重新分配编号。
 目录在启动时生成，修改配置后须重启服务。
 
-PPM 模式的 LPR 限制为 TCP `515`；队列名为 `1` 至 `32` 字节的可打印 ASCII，
-不得包含空白、控制字符或映射分隔符 `=`。对外公布的 LPR 字节计数为启用。
-这些限制只在 PPM 模式生效，现有非 PPM LPD 配置继续使用原规则。
+PPM 启用且 `printerMap` 非空时，`lpdServer.port` 必须为 TCP `515`；
+队列名为 `1` 至 `32` 字节的可打印 ASCII（`0x21`–`0x7e`），不得包含空白、
+控制字符或 `=`。对外公布的 LPR 字节计数为启用。设置 `"ppmDisabled": true`
+后不再施加这些 PPM 专用限制；仍须满足配置文件的类型、范围、唯一性和编码规则。
+无论是否启用 PPM，LPR 队列名都不得包含 CR/LF。
 
-Windows 后台打印机名称保持现有 CLI、管理面板和 `OpenPrinterA` 使用的 Windows
-ANSI 代码页；生成 MIB 时转换为 Unicode，再以 UTF-8 导出。中文后台打印机名称
+配置文件使用 UTF-8；Windows 后台打印机名称读入后保持配置模块与 `OpenPrinterA`
+使用的 Windows ANSI 代码页，系统代码页无法表示的字符会报错。生成 MIB 时转换
+为 Unicode，再以 UTF-8 导出。中文后台打印机名称
 与 LPR 队列名是两个不同字段：后台名称可使用系统代码页支持的中文，LPR 队列名
 仍必须是 ASCII。编码无法解码或名称包含内嵌 NUL 时启动失败。打印机显示名称同时
 限制为 `127` 个 UTF-8 字节和 Windows TCPMON 能完整保存的 `63` 个 UTF-16 单元，
@@ -91,7 +135,7 @@ ANSI 代码页；生成 MIB 时转换为 Unicode，再以 UTF-8 导出。中文�
 
 ## 后端状态与真实设备身份
 
-`--snmp-ppm` 同时启用后台元数据采集，没有新增手填身份参数。每台逻辑打印机的
+PPM 启用时同时启动后台元数据采集，无需手填身份字段。每台逻辑打印机的
 `ppmPrinterHrDeviceIndex` 等于其 `ppmPrinterIndex`，
 `ppmPrinterSnmpQueryEnabled=false(2)`。显式查询 Host Resources MIB 仍可读取 `hrDeviceIndex`、
 `hrDeviceType`、`hrDeviceStatus`、`hrPrinterStatus` 和 `hrPrinterDetectedErrorState`。
@@ -122,7 +166,7 @@ PrintHub 以单进程运行。状态和身份各用一个后台线程，服务�
 
 ### USB 身份备用路径与诊断日志
 
-USB 备用路径与 `--snmp-ppm` 绑定，不新增开关，不改变 RAW/LPD 模式。
+USB 备用路径随 PPM 启用，不需要单独配置，不改变 RAW/LPD 模式。
 它只在 Bidi 未取得合法非空 ID 后尝试，并满足以下条件：
 
 - 查询的是本机队列、单个端口；不支持远程队列或多端口打印池，不猜测设备。
@@ -152,11 +196,34 @@ USB 脱机、找不到设备、共享/权限/读取错误等保留为可重试�
 Bidi 与 USB 备用路径共用身份线程。如果 Bidi 或其清理不返回，暂时无法执行 USB
 或采集其他队列的身份；状态采集仍可运行。SNMP 始终只读缓存。
 
-身份诊断默认写入 **info** 日志，正常运行无需额外参数：
+身份诊断默认写入 **info** 日志。可将以下内容保存为 `config.json`，并将 `name`
+替换为实际 USB 打印队列名称；`logLevel` 缺省即为 `"info"`：
+
+```json
+{
+  "logLevel": "info",
+  "printerMap": [
+    {
+      "name": "实际 USB 打印队列",
+      "lprQueue": "usb",
+      "rawServer": {
+        "listenAddress": "0.0.0.0",
+        "port": 9100
+      }
+    }
+  ],
+  "ppmDisabled": false
+}
+```
+
+首次部署时，在管理员 PowerShell 中安装并启动：
 
 ```powershell
-.\PrintHub.exe --snmp-ppm --raw-server "实际 USB 打印队列:9100" --log-level info
+.\PrintHub.exe --config .\config.json --service install
+.\PrintHub.exe --service start
 ```
+
+若已安装并使用该配置文件，保存修改后执行 `.\PrintHub.exe --service restart`。
 
 日志位于可执行文件旁的 `logs` 目录。按 `Printer identity index` 查找：
 

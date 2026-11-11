@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <climits>
-#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string_view>
@@ -33,9 +32,9 @@ std::wstring decodePrinterName(const std::string& text) {
         throw std::invalid_argument("PPM printer name must be nonempty without embedded NUL");
     }
     const auto length = static_cast<int>(text.size());
-    // ServiceConfiguration uses the process ANSI code page, matching argv,
-    // the existing manager and OpenPrinterA. Only the SNMP representation
-    // is UTF-8; requiring UTF-8 input would break existing localized queues.
+    // ServiceConfiguration stores printerMap names in the process ANSI code
+    // page, matching OpenPrinterA. The SNMP representation is UTF-8;
+    // localized backend names still use ACP.
     const auto size = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, text.data(), length, nullptr, 0);
     if (size == 0) {
         throw std::invalid_argument("PPM printer name is not valid in the Windows ANSI code page");
@@ -167,7 +166,7 @@ void put(snmp::Mib& mib, const snmp::Oid& object, std::initializer_list<uint32_t
 
 std::string portName(std::string_view printerCaption, const Port& port) {
     const auto suffix = port.raw ? " - RAW TCP " + std::to_string(port.targetPort)
-        : " - LPR " + port.queue + " (TCP 515)";
+        : " - LPR " + port.queue + " (TCP " + std::to_string(port.targetPort) + ")";
     // Retain the distinct endpoint even when the backend printer name is long.
     return truncateUtf8(printerCaption, kNameLimitBytes - suffix.size()) + suffix;
 }
@@ -176,30 +175,29 @@ std::string portName(std::string_view printerCaption, const Port& port) {
 
 PpmDirectory PpmMib::BuildDirectory(const ServiceConfiguration& configuration) {
     auto ppmConfiguration = configuration;
-    ppmConfiguration.snmpPpm = true;
+    ppmConfiguration.ppmDisabled = false;
     ppmConfiguration.Validate();
 
     std::map<std::wstring, Printer, OrdinalIgnoreCaseLess> printers;
-    const auto addPort = [&](const std::string& name, Port port) {
-        auto ordinalName = decodePrinterName(name);
+    size_t portCount = 0;
+    for (const auto& mapping : configuration.printerMap) {
+        auto ordinalName = decodePrinterName(mapping.name);
         auto [position, inserted] = printers.try_emplace(ordinalName, Printer{ ordinalName, {} });
         auto& printer = position->second;
         // A group may appear under differently cased spellings. Select its
-        // display spelling deterministically, independently of argument order.
+        // display spelling deterministically, independently of printerMap order.
         if (!inserted && compareOrdinal(ordinalName, printer.ordinalName, false) < 0) {
             printer.ordinalName = std::move(ordinalName);
         }
-        printer.ports.push_back(std::move(port));
-    };
-    for (const auto& raw : configuration.rawServers) {
-        addPort(raw.printerName, { true, raw.port, {} });
-    }
-    for (const auto& lpd : configuration.lpdQueues) {
-        addPort(lpd.printerName, { false, configuration.lpdPort, lpd.queueName });
+        printer.ports.push_back({ false, configuration.lpdServer.port, mapping.lprQueue });
+        ++portCount;
+        if (mapping.rawServer) {
+            printer.ports.push_back({ true, mapping.rawServer->port, {} });
+            ++portCount;
+        }
     }
 
-    const auto portCount = configuration.rawServers.size() + configuration.lpdQueues.size();
-    if (printers.size() > INT_MAX || portCount > (std::numeric_limits<uint32_t>::max)()) {
+    if (printers.size() > INT_MAX || portCount > INT_MAX) {
         throw std::invalid_argument("Too many printers or ports for PPM indices");
     }
     const auto captions = printerCaptions(printers);
@@ -213,8 +211,8 @@ PpmDirectory PpmMib::BuildDirectory(const ServiceConfiguration& configuration) {
     put(mib, objectOid(1, 2), { 0 }, snmp::Value::Gauge(static_cast<uint32_t>(printers.size())));
     put(mib, objectOid(1, 3), { 0 }, snmp::Value::Gauge(static_cast<uint32_t>(portCount)));
 
-    // Register accessible columns even if a future caller builds an empty
-    // table, so SNMP can distinguish missing instances from unknown objects.
+    // Register accessible columns even for an empty printerMap, so SNMP can
+    // distinguish missing instances from unknown objects.
     for (uint32_t column = 2; column <= 8; ++column) mib.objects.insert(objectOid(kPrinterGroup, column));
     for (uint32_t column = 2; column <= 9; ++column) mib.objects.insert(objectOid(kPortGroup, column));
     for (const auto& object : { kHrDeviceIndex, kHrDeviceType, kHrDeviceStatus, kHrPrinterStatus, kHrPrinterErrors }) {

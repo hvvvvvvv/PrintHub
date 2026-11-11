@@ -1,8 +1,9 @@
 #include<utility.h>
 #include<fmt/format.h>
-#include <ServiceConfiguration.hpp>
+#include <CommandLine.hpp>
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace utility {
 	namespace {
@@ -172,23 +173,18 @@ namespace utility {
 		if (args.binaryPath.empty()) {
 			throw std::invalid_argument("Binary path cannot be empty");
 		}
-		// Convert to Unicode before quoting: CP_ACP multi-byte sequences may end
-		// in 0x5C and must not be mistaken for command-line escape backslashes.
-		std::vector<std::wstring> commandLineArguments{ toWide(args.binaryPath) };
-		for (const auto& argument : args.arguments) {
-			commandLineArguments.push_back(toWide(argument));
-		}
+		std::vector<std::wstring> commandLineArguments{ args.binaryPath.native() };
+		commandLineArguments.insert(commandLineArguments.end(), args.arguments.begin(), args.arguments.end());
 		const auto binaryPath = BuildWindowsCommandLine(commandLineArguments);
 		std::vector<wchar_t> deps;
 		for (const auto& dep : args.dependencies) {
 			if (dep.empty()) continue;
-			const auto wideDep = toWide(dep);
-			deps.insert(deps.end(), wideDep.begin(), wideDep.end());
+			deps.insert(deps.end(), dep.begin(), dep.end());
 			deps.push_back(L'\0');
 		}
 		deps.push_back(L'\0');
 		const auto serviceName = toWide(m_serviceName);
-		const auto displayName = toWide(args.displayName.value_or(m_serviceName));
+		const auto displayName = args.displayName.value_or(toWide(m_serviceName));
 		auto serviceHandle = CreateServiceW(
 			m_serviceHandle,
 			serviceName.c_str(),

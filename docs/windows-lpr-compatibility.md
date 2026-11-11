@@ -1,7 +1,7 @@
 # Windows LPR 兼容性验证
 
-运行启用 LPD 监听器（默认 TCP 515）的服务，并显式配置
-`--lpd-queue "队列名=打印机名称"` 映射。PrintHub 仅接受已配置的队列名；
+运行启用 LPD 监听器（默认 TCP 515）的服务，并在配置文件的 `printerMap` 中
+显式配置 `name` 与 `lprQueue` 映射。PrintHub 仅接受已配置的队列名；
 不会根据 Windows 打印机或共享名称推断目标打印机。
 
 ## 必测矩阵
@@ -15,7 +15,7 @@
 
 ## 手动验证步骤
 
-1. 创建 Windows 测试打印机，并在 PrintHub 管理面板中为其添加 LPD 队列映射。
+1. 创建 Windows 测试打印机，并在 PrintHub 配置文件的 `printerMap` 中为该打印机添加 `lprQueue` 映射。
    在 Windows LPR 端口中使用配置的队列名；队列名必须匹配，但 ASCII 字母不区分大小写。
 2. 为 PrintHub 主机配置标准 TCP/IP 端口，分别测试 RAW/9100 与 LPR/515。
    LPR 测试应分别在选中和清除“启用 LPR 字节计数（LPR Byte Counting Enabled）”时执行。

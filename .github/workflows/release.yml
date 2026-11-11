@@ -89,7 +89,7 @@ jobs:
           Remove-Item -LiteralPath $packageDirectory -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $packageDirectory -Force | Out-Null
           Copy-Item -LiteralPath (Join-Path $publishDirectory 'PrintHub.exe') -Destination $packageDirectory
-          Copy-Item -LiteralPath (Join-Path $publishDirectory 'PrintHubManager.exe') -Destination $packageDirectory
+          Copy-Item -LiteralPath (Join-Path $publishDirectory 'config.example.json') -Destination $packageDirectory
           Copy-Item -LiteralPath LICENSE -Destination $packageDirectory
           Compress-Archive -Path (Join-Path $packageDirectory '*') -DestinationPath $archivePath -Force
 

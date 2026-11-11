@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -7,8 +8,19 @@
 #include <vector>
 
 struct RawServerConfiguration {
-    std::string printerName;
+    std::string listenAddress = "0.0.0.0";
     uint16_t port = 9100;
+};
+
+struct LpdServerConfiguration {
+    std::string listenAddress = "0.0.0.0";
+    uint16_t port = 515;
+};
+
+struct PrinterMapping {
+    std::string name;
+    std::string lprQueue;
+    std::optional<RawServerConfiguration> rawServer;
 };
 
 struct LpdQueueMapping {
@@ -16,60 +28,27 @@ struct LpdQueueMapping {
     std::string printerName;
 };
 
-enum class ServiceLogLevel {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-    Critical,
-    Off,
-};
+enum class ServiceLogLevel { Trace, Debug, Info, Warn, Error, Critical, Off };
 
-enum class ServiceConfigurationArgumentFormat {
-    // Preserve the concise command line historically emitted by PrintHub.
-    Compact,
-    // Write every value-bearing configuration option, including defaults.
-    Explicit,
-};
-
-// The complete set of service-hosting options.  Keeping this model independent
-// from the console parser lets the MFC manager and PrintHub use one wire format.
 struct ServiceConfiguration {
     static constexpr uint16_t kDefaultLpdPort = 515;
     static constexpr int kDefaultMinThreads = 1;
     static constexpr int kDefaultMaxPendingClients = 256;
     static constexpr size_t kDefaultLpdMaxControlFileBytes = 4 * 1024 * 1024;
 
-    std::vector<RawServerConfiguration> rawServers;
-    std::vector<LpdQueueMapping> lpdQueues;
-    int rawServerMinThreads = kDefaultMinThreads;
-    int maxPendingClients = kDefaultMaxPendingClients;
-    uint16_t lpdPort = kDefaultLpdPort;
-    size_t lpdMaxControlFileBytes = kDefaultLpdMaxControlFileBytes;
-    std::string listenAddress = "0.0.0.0";
-    bool snmpPpm = false;
-    int lpdMinThreads = kDefaultMinThreads;
     ServiceLogLevel logLevel = ServiceLogLevel::Info;
+    int maxPendingClients = kDefaultMaxPendingClients;
+    LpdServerConfiguration lpdServer;
+    int rawServerMinThreads = kDefaultMinThreads;
+    int lpdMinThreads = kDefaultMinThreads;
+    std::vector<PrinterMapping> printerMap;
+    bool ppmDisabled = false;
 
-    // Parses only service configuration switches; process/service-management
-    // switches are deliberately rejected so callers cannot lose them silently.
-    static ServiceConfiguration Parse(const std::vector<std::string>& arguments, bool requireRunnableListener = true);
-    std::vector<std::string> ToArguments() const;
-    std::vector<std::string> ToArguments(ServiceConfigurationArgumentFormat format) const;
-    void Validate(bool requireRunnableListener = true) const;
-
+    void Validate() const;
     static std::string LogLevelToString(ServiceLogLevel value);
     static ServiceLogLevel ParseLogLevel(const std::string& value);
     static bool IsIpv4Address(const std::string& value);
 };
 
-// Resolves an LPD queue using the same ASCII case-insensitive exact-match
-// rule used by the service.  There is intentionally no Windows-printer-name
-// fallback: only explicitly configured queues are accepted.
 std::optional<std::string> ResolveLpdQueuePrinter(const std::vector<LpdQueueMapping>& mappings,
     std::string_view queueName);
-
-// Windows-compatible argument quoting used for a CreateProcess command line.
-std::wstring QuoteWindowsCommandLineArgument(const std::wstring& value);
-std::wstring BuildWindowsCommandLine(const std::vector<std::wstring>& arguments);

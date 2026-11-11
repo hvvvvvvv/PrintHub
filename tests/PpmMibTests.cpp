@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <optional>
 #include <set>
 #include <span>
 #include <vector>
@@ -46,24 +47,33 @@ void requireSameMib(const snmp::Mib& actual, const snmp::Mib& expected) {
 ServiceConfiguration configuration() {
     ServiceConfiguration result;
     // ASCII input makes CP_ACP decoding deterministic on every Windows host.
-    result.rawServers = {{"Zebra", 9200}, {"Alpha", 9102}, {"alpha", 9100}};
-    result.lpdQueues = {{"zQueue", "ALPHA"}, {"aQueue", "Alpha"}, {"only", "Beta"}};
+    result.printerMap = {
+        {"Zebra", "zQueue", RawServerConfiguration{"0.0.0.0", 9200}},
+        {"ALPHA", "aQueue", RawServerConfiguration{"0.0.0.0", 9102}},
+        {"alpha", "only", std::nullopt},
+        {"Beta", "betaQueue", std::nullopt}
+    };
     return result;
 }
 
 void testDirectoryIndexesAndAllColumns() {
     const auto config = configuration();
+    const auto original = config;
     const auto directory = PpmMib::BuildDirectory(config);
-    require(!config.snmpPpm, "BuildDirectory must not mutate configuration");
+    require(config.ppmDisabled == original.ppmDisabled &&
+        config.lpdServer.listenAddress == original.lpdServer.listenAddress &&
+        config.lpdServer.port == original.lpdServer.port, "BuildDirectory must not mutate configuration");
     require(directory.printers.size() == 3, "Case-insensitive backend printer grouping");
     const std::array<std::wstring, 3> names{L"ALPHA", L"Beta", L"Zebra"};
     const std::array<std::string, 3> captions{"ALPHA", "Beta", "Zebra"};
-    const std::array<std::uint8_t, 3> portCounts{4, 1, 1};
+    const std::array<std::uint8_t, 3> portCounts{3, 1, 2};
     for (size_t index = 0; index < names.size(); ++index) {
         require(directory.printers[index].index == index + 1 && directory.printers[index].queueName == names[index],
             "Contiguous, case-insensitive sorted indexes and deterministic display spelling");
     }
     const auto& mib = directory.baseMib;
+    // Four scalars, twelve values per printer, and eight values per port:
+    // 4 + 3 * 12 + 6 * 8 = 88 values; 4 + 12 + 8 = 24 registered objects.
     require(mib.values.size() == 88 && mib.objects.size() == 24, "Directory MIB shape");
     expectValue(mib, {1, 3, 6, 1, 2, 1, 1, 1, 0}, 4, "PrintHub PPM print server");
     expectValue(mib, indexed(kPpmGeneral, {1, 0}), 4, "");
@@ -101,12 +111,12 @@ void testDirectoryIndexesAndAllColumns() {
         std::string portBytes;
     };
     const std::vector<Port> ports{
-        {1, 1, "ALPHA - RAW TCP 9100", "", true, bytes({0x23, 0x8C})},
-        {1, 2, "ALPHA - RAW TCP 9102", "", true, bytes({0x23, 0x8E})},
-        {1, 3, "ALPHA - LPR aQueue (TCP 515)", "aQueue", false, bytes({2, 3})},
-        {1, 4, "ALPHA - LPR zQueue (TCP 515)", "zQueue", false, bytes({2, 3})},
-        {2, 1, "Beta - LPR only (TCP 515)", "only", false, bytes({2, 3})},
-        {3, 1, "Zebra - RAW TCP 9200", "", true, bytes({0x23, 0xF0})}
+        {1, 1, "ALPHA - RAW TCP 9102", "", true, bytes({0x23, 0x8E})},
+        {1, 2, "ALPHA - LPR aQueue (TCP 515)", "aQueue", false, bytes({2, 3})},
+        {1, 3, "ALPHA - LPR only (TCP 515)", "only", false, bytes({2, 3})},
+        {2, 1, "Beta - LPR betaQueue (TCP 515)", "betaQueue", false, bytes({2, 3})},
+        {3, 1, "Zebra - RAW TCP 9200", "", true, bytes({0x23, 0xF0})},
+        {3, 2, "Zebra - LPR zQueue (TCP 515)", "zQueue", false, bytes({2, 3})}
     };
     for (const auto& port : ports) {
         expectValue(mib, indexed(kPpmPortEntry, {2, port.printer, port.index}), 2, bytes({1}));
@@ -121,8 +131,7 @@ void testDirectoryIndexesAndAllColumns() {
             bytes({static_cast<std::uint8_t>(port.raw ? 2 : 1)}));
     }
     auto reordered = config;
-    std::reverse(reordered.rawServers.begin(), reordered.rawServers.end());
-    std::reverse(reordered.lpdQueues.begin(), reordered.lpdQueues.end());
+    std::reverse(reordered.printerMap.begin(), reordered.printerMap.end());
     const auto second = PpmMib::BuildDirectory(reordered);
     requireSameMib(second.baseMib, mib);
     require(second.printers.size() == directory.printers.size(), "Reordered printer count");
@@ -130,12 +139,40 @@ void testDirectoryIndexesAndAllColumns() {
         require(second.printers[index].index == directory.printers[index].index &&
             second.printers[index].queueName == directory.printers[index].queueName, "Reordered printer identity");
     }
+
+    auto disabled = config;
+    disabled.ppmDisabled = true;
+    const auto originalDisabled = disabled;
+    requireSameMib(PpmMib::BuildDirectory(disabled).baseMib, mib);
+    require(disabled.ppmDisabled == originalDisabled.ppmDisabled &&
+        disabled.lpdServer.listenAddress == originalDisabled.lpdServer.listenAddress &&
+        disabled.lpdServer.port == originalDisabled.lpdServer.port,
+        "Building PPM for a disabled configuration must not mutate the caller");
+}
+
+void testPortOrdering() {
+    auto config = configuration();
+    config.printerMap[2].rawServer = RawServerConfiguration{"0.0.0.0", 9100};
+    config.printerMap[2].lprQueue = "ZQueue2";
+    const auto directory = PpmMib::BuildDirectory(config);
+    const auto& mib = directory.baseMib;
+    expectValue(mib, indexed(kPpmGeneral, {3, 0}), 0x42, bytes({7}));
+    expectValue(mib, indexed(kPpmPrinterEntry, {4, 1}), 0x42, bytes({4}));
+    expectValue(mib, indexed(kPpmPortEntry, {3, 1, 1}), 4, "ALPHA - RAW TCP 9100");
+    expectValue(mib, indexed(kPpmPortEntry, {3, 1, 2}), 4, "ALPHA - RAW TCP 9102");
+    expectValue(mib, indexed(kPpmPortEntry, {3, 1, 3}), 4, "ALPHA - LPR aQueue (TCP 515)");
+    expectValue(mib, indexed(kPpmPortEntry, {3, 1, 4}), 4, "ALPHA - LPR ZQueue2 (TCP 515)");
+    std::reverse(config.printerMap.begin(), config.printerMap.end());
+    requireSameMib(PpmMib::BuildDirectory(config).baseMib, mib);
 }
 
 void testCaptionsAndInvalidConfiguration() {
     ServiceConfiguration longNames;
     const auto prefix = std::string(70, 'A');
-    longNames.rawServers = {{prefix + "-two", 9101}, {prefix + "-one", 9100}};
+    longNames.printerMap = {
+        {prefix + "-two", "two", RawServerConfiguration{"0.0.0.0", 9101}},
+        {prefix + "-one", "one", RawServerConfiguration{"0.0.0.0", 9100}}
+    };
     const auto directory = PpmMib::BuildDirectory(longNames);
     require(directory.printers.size() == 2 && directory.printers[0].queueName == std::wstring(70, L'A') + L"-one",
         "Directory retains full backend names");
@@ -144,22 +181,46 @@ void testCaptionsAndInvalidConfiguration() {
     expectValue(directory.baseMib, indexed(kPpmPrinterEntry, {2, 1}), 4, first);
     expectValue(directory.baseMib, indexed(kPpmPrinterEntry, {2, 2}), 4, second);
     expectValue(directory.baseMib, indexed(kPpmPortEntry, {3, 1, 1}), 4, first + " - RAW TCP 9100");
+    expectValue(directory.baseMib, indexed(kPpmPortEntry, {3, 1, 2}), 4, first + " - LPR one (TCP 515)");
     expectValue(directory.baseMib, indexed(kPpmPortEntry, {3, 2, 1}), 4, second + " - RAW TCP 9101");
+    expectValue(directory.baseMib, indexed(kPpmPortEntry, {3, 2, 2}), 4, second + " - LPR two (TCP 515)");
     ServiceConfiguration single;
-    single.rawServers = {{std::string(64, 'B'), 9100}};
-    expectValue(PpmMib::BuildDirectory(single).baseMib, indexed(kPpmPrinterEntry, {2, 1}), 4, std::string(63, 'B'));
+    single.printerMap = {{std::string(64, 'B'), "single", std::nullopt}};
+    const auto singleDirectory = PpmMib::BuildDirectory(single);
+    expectValue(singleDirectory.baseMib, indexed(kPpmPrinterEntry, {2, 1}), 4, std::string(63, 'B'));
+    expectValue(singleDirectory.baseMib, indexed(kPpmPortEntry, {3, 1, 1}), 4,
+        std::string(63, 'B') + " - LPR single (TCP 515)");
 
-    requireThrows([] { PpmMib::BuildDirectory({}); }, "Empty directory requires a configured listener");
+    const auto empty = PpmMib::BuildDirectory(ServiceConfiguration{});
+    require(empty.printers.empty(), "Empty printerMap has no printers");
+    require(empty.baseMib.values.size() == 4 && empty.baseMib.objects == directory.baseMib.objects,
+        "Empty directory retains all scalars and registered objects without table rows");
+    expectValue(empty.baseMib, indexed(kPpmGeneral, {1, 0}), 4, "");
+    expectValue(empty.baseMib, indexed(kPpmGeneral, {2, 0}), 0x42, bytes({0}));
+    expectValue(empty.baseMib, indexed(kPpmGeneral, {3, 0}), 0x42, bytes({0}));
     const std::vector<void (*)(ServiceConfiguration&)> mutations{
-        [](auto& c) { c.lpdPort = 1515; },
-        [](auto& c) { c.lpdQueues[0].queueName = "two words"; },
-        [](auto& c) { c.lpdQueues[0].queueName.assign(33, 'x'); },
-        [](auto& c) { c.rawServers[0].printerName = std::string("A\0B", 3); }
+        [](auto& c) { c.lpdServer.port = 1515; },
+        [](auto& c) { c.printerMap[0].lprQueue = "two words"; },
+        [](auto& c) { c.printerMap[0].lprQueue.assign(33, 'x'); },
+        [](auto& c) { c.printerMap[0].name = std::string("A\0B", 3); },
+        [](auto& c) { c.printerMap[0].rawServer->port = 0; },
+        [](auto& c) { c.lpdServer.listenAddress = "999.0.0.1"; },
+        [](auto& c) {
+            c.lpdServer.listenAddress = "0.0.0.0";
+            c.printerMap[0].rawServer->listenAddress = "127.0.0.1";
+        }
     };
     for (const auto mutate : mutations) {
-        auto config = configuration();
-        mutate(config);
-        requireThrows([&] { PpmMib::BuildDirectory(config); }, "BuildDirectory must enforce PPM-specific validation");
+        for (const auto disabled : {false, true}) {
+            auto config = configuration();
+            config.ppmDisabled = disabled;
+            mutate(config);
+            const auto original = config;
+            requireThrows([&] { PpmMib::BuildDirectory(config); }, "BuildDirectory must enforce PPM-specific validation");
+            require(config.ppmDisabled == original.ppmDisabled &&
+                config.lpdServer.listenAddress == original.lpdServer.listenAddress &&
+                config.lpdServer.port == original.lpdServer.port, "Failed validation must not mutate configuration");
+        }
     }
 }
 
@@ -219,6 +280,8 @@ void testMetadataOverlayAndStaleness() {
     }, "Identity sample count mismatch");
     const PpmDirectory empty;
     require(PpmMib::WithMetadata(empty, {}, {}, now).values.empty(), "Empty overlay is well-defined");
+    const auto emptyDirectory = PpmMib::BuildDirectory(ServiceConfiguration{});
+    requireSameMib(PpmMib::WithMetadata(emptyDirectory, {}, {}, now), emptyDirectory.baseMib);
 }
 
 void testStatusMapping() {
@@ -296,6 +359,7 @@ void testDeviceIdValidation() {
 int main() {
     try {
         runTest("directory indexes and all columns", testDirectoryIndexesAndAllColumns);
+        runTest("port ordering", testPortOrdering);
         runTest("captions and invalid configuration", testCaptionsAndInvalidConfiguration);
         runTest("metadata overlay and staleness", testMetadataOverlayAndStaleness);
         runTest("status mapping", testStatusMapping);

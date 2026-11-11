@@ -1,240 +1,111 @@
 #include <ServiceConfiguration.hpp>
 #include <AsciiText.h>
+#include <Ipv4.h>
 
 #include <algorithm>
-#include <charconv>
-#include <limits>
 #include <set>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 
-constexpr auto kRawServer = "--raw-server";
-constexpr auto kLpdQueue = "--lpd-queue";
-constexpr auto kRawServerMinThreads = "--raw-server-min-threads";
-constexpr auto kMaxPendingClients = "--max-pending-clients";
-constexpr auto kLpdPort = "--lpd-port";
-constexpr auto kLpdMaxControlFileBytes = "--lpd-max-control-file-bytes";
-constexpr auto kLpdMinThreads = "--lpd-min-threads";
-constexpr auto kListenAddress = "--listen-address";
-constexpr auto kSnmpPpm = "--snmp-ppm";
-constexpr auto kLogLevel = "--log-level";
-
-uint16_t parsePort(const std::string& text, const char* name) {
-    unsigned int value = 0;
-    const auto [position, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (text.empty() || error != std::errc{} || position != text.data() + text.size() || value == 0 || value > UINT16_MAX) {
-        throw std::invalid_argument(std::string("Invalid ") + name + ": " + text);
+void validateCount(int value, const char* field) {
+    if (value < 1 || value > UINT16_MAX) {
+        throw std::invalid_argument(std::string(field) + ": expected integer 1..65535");
     }
-    return static_cast<uint16_t>(value);
 }
 
-int parseThreadCount(const std::string& text, const char* name) {
-    int value = 0;
-    const auto [position, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (text.empty() || error != std::errc{} || position != text.data() + text.size() || value < 1 || value > UINT16_MAX) {
-        throw std::invalid_argument(std::string("Invalid ") + name + ": " + text);
+void validateText(const std::string& value, const std::string& field) {
+    if (value.empty()) throw std::invalid_argument(field + ": expected nonempty string");
+    if (value.find('\0') != std::string::npos) {
+        throw std::invalid_argument(field + ": embedded NUL is not allowed");
     }
-    return value;
 }
 
-size_t parseByteCount(const std::string& text, const char* name) {
-    uint64_t value = 0;
-    const auto [position, error] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (text.empty() || error != std::errc{} || position != text.data() + text.size() || value == 0 ||
-        value > static_cast<uint64_t>((std::numeric_limits<size_t>::max)())) {
-        throw std::invalid_argument(std::string("Invalid ") + name + ": " + text);
-    }
-    return static_cast<size_t>(value);
-}
+struct Listener {
+    uint32_t address;
+    uint16_t port;
+    std::string field;
+    std::string endpoint;
+};
 
-const std::string& requireValue(const std::vector<std::string>& arguments, size_t& position, const char* name) {
-    if (++position >= arguments.size()) {
-        throw std::invalid_argument(std::string("Missing value for ") + name);
-    }
-    return arguments[position];
-}
-
-std::wstring quoteWindowsCommandLineArgument(const std::wstring& value) {
-    if (value.empty()) return L"\"\"";
-    if (value.find_first_of(L" \t\"") == std::wstring::npos) return value;
-    std::wstring result = L"\"";
-    size_t slashCount = 0;
-    for (const auto character : value) {
-        if (character == L'\\') {
-            ++slashCount;
-        } else if (character == L'\"') {
-            result.append(slashCount * 2 + 1, L'\\');
-            result.push_back(character);
-            slashCount = 0;
-        } else {
-            result.append(slashCount, L'\\');
-            result.push_back(character);
-            slashCount = 0;
+void addListener(std::vector<Listener>& listeners, uint32_t address, uint16_t port,
+    const std::string& field, const std::string& listenAddress) {
+    const auto endpoint = listenAddress + ":" + std::to_string(port);
+    for (const auto& other : listeners) {
+        if (port == other.port && (address == other.address || address == 0 || other.address == 0)) {
+            throw std::invalid_argument(field + ": listener " + endpoint + " conflicts with " +
+                other.field + " at " + other.endpoint);
         }
     }
-    result.append(slashCount * 2, L'\\');
-    result.push_back(L'\"');
-    return result;
-}
-
-std::wstring buildWindowsCommandLine(const std::vector<std::wstring>& arguments) {
-    std::wstring result;
-    for (const auto& argument : arguments) {
-        if (!result.empty()) result.push_back(L' ');
-        result += quoteWindowsCommandLineArgument(argument);
-    }
-    return result;
+    listeners.push_back({address, port, field, endpoint});
 }
 
 } // namespace
 
-ServiceConfiguration ServiceConfiguration::Parse(const std::vector<std::string>& arguments, bool requireRunnableListener) {
-    ServiceConfiguration result;
-    for (size_t position = 0; position < arguments.size(); ++position) {
-        const auto& argument = arguments[position];
-        if (argument == kRawServer) {
-            const auto& value = requireValue(arguments, position, kRawServer);
-            const auto separator = value.rfind(':');
-            RawServerConfiguration server;
-            if (separator == std::string::npos) {
-                server.printerName = value;
-            } else {
-                server.printerName = value.substr(0, separator);
-                server.port = parsePort(value.substr(separator + 1), "raw server port");
-            }
-            if (server.printerName.empty()) {
-                throw std::invalid_argument("Printer name cannot be empty in raw server definition");
-            }
-            result.rawServers.push_back(std::move(server));
-        } else if (argument == kLpdQueue) {
-            const auto& value = requireValue(arguments, position, kLpdQueue);
-            const auto separator = value.find('=');
-            if (separator == std::string::npos || separator == 0 || separator + 1 == value.size()) {
-                throw std::invalid_argument("LPD queue mapping must be queue=printer");
-            }
-            result.lpdQueues.push_back({ value.substr(0, separator), value.substr(separator + 1) });
-        } else if (argument == kRawServerMinThreads) {
-            result.rawServerMinThreads = parseThreadCount(requireValue(arguments, position, kRawServerMinThreads), "raw server minimum threads");
-        } else if (argument == kMaxPendingClients) {
-            result.maxPendingClients = parseThreadCount(requireValue(arguments, position, kMaxPendingClients), "maximum pending clients");
-        } else if (argument == kLpdPort) {
-            result.lpdPort = parsePort(requireValue(arguments, position, kLpdPort), "LPD port");
-        } else if (argument == kLpdMaxControlFileBytes) {
-            result.lpdMaxControlFileBytes = parseByteCount(requireValue(arguments, position, kLpdMaxControlFileBytes), "LPD maximum control file bytes");
-        } else if (argument == kLpdMinThreads) {
-            result.lpdMinThreads = parseThreadCount(requireValue(arguments, position, kLpdMinThreads), "LPD minimum threads");
-        } else if (argument == kListenAddress) {
-            result.listenAddress = requireValue(arguments, position, kListenAddress);
-        } else if (argument == kSnmpPpm) {
-            result.snmpPpm = true;
-        } else if (argument == kLogLevel) {
-            result.logLevel = ParseLogLevel(requireValue(arguments, position, kLogLevel));
-        } else {
-            throw std::invalid_argument("Unknown service configuration argument: " + argument);
-        }
+void ServiceConfiguration::Validate() const {
+    validateCount(rawServerMinThreads, "minThreads.raw");
+    validateCount(lpdMinThreads, "minThreads.lpd");
+    validateCount(maxPendingClients, "maxPendingClients");
+    validateText(lpdServer.listenAddress, "lpdServer.listenAddress");
+    const auto lpdAddress = ParseIpv4Address(lpdServer.listenAddress);
+    if (!lpdAddress) {
+        throw std::invalid_argument("lpdServer.listenAddress: expected IPv4 address");
     }
-    result.Validate(requireRunnableListener);
-    return result;
-}
+    if (lpdServer.port == 0) {
+        throw std::invalid_argument("lpdServer.port: expected integer 1..65535");
+    }
+    if (!ppmDisabled && !printerMap.empty() && lpdServer.port != kDefaultLpdPort) {
+        throw std::invalid_argument("lpdServer.port: PPM requires port 515; set ppmDisabled=true to use another LPD port");
+    }
 
-std::vector<std::string> ServiceConfiguration::ToArguments() const {
-    return ToArguments(ServiceConfigurationArgumentFormat::Compact);
-}
-
-std::vector<std::string> ServiceConfiguration::ToArguments(ServiceConfigurationArgumentFormat format) const {
-    Validate();
-    const bool includeDefaults = format == ServiceConfigurationArgumentFormat::Explicit;
-    std::vector<std::string> result;
-    for (const auto& server : rawServers) {
-        result.push_back(kRawServer);
-        result.push_back(server.printerName + ":" + std::to_string(server.port));
+    std::set<std::string> queues;
+    std::set<std::pair<uint32_t, uint16_t>> rawEndpoints;
+    std::vector<Listener> listeners;
+    if (!printerMap.empty()) {
+        addListener(listeners, *lpdAddress, lpdServer.port, "lpdServer (LPD server)", lpdServer.listenAddress);
     }
-    for (const auto& mapping : lpdQueues) {
-        result.push_back(kLpdQueue);
-        result.push_back(mapping.queueName + "=" + mapping.printerName);
-    }
-    if (includeDefaults || rawServerMinThreads != kDefaultMinThreads) {
-        result.push_back(kRawServerMinThreads);
-        result.push_back(std::to_string(rawServerMinThreads));
-    }
-    if (includeDefaults || maxPendingClients != kDefaultMaxPendingClients) {
-        result.push_back(kMaxPendingClients);
-        result.push_back(std::to_string(maxPendingClients));
-    }
-    if (includeDefaults || lpdPort != kDefaultLpdPort) {
-        result.push_back(kLpdPort);
-        result.push_back(std::to_string(lpdPort));
-    }
-    if (includeDefaults || lpdMaxControlFileBytes != kDefaultLpdMaxControlFileBytes) {
-        result.push_back(kLpdMaxControlFileBytes);
-        result.push_back(std::to_string(lpdMaxControlFileBytes));
-    }
-    if (includeDefaults || listenAddress != "0.0.0.0") {
-        result.push_back(kListenAddress);
-        result.push_back(listenAddress);
-    }
-    if (snmpPpm) {
-        result.push_back(kSnmpPpm);
-    }
-    if (includeDefaults || lpdMinThreads != kDefaultMinThreads) {
-        result.push_back(kLpdMinThreads);
-        result.push_back(std::to_string(lpdMinThreads));
-    }
-    if (includeDefaults || logLevel != ServiceLogLevel::Info) {
-        result.push_back(kLogLevel);
-        result.push_back(LogLevelToString(logLevel));
-    }
-    return result;
-}
-
-void ServiceConfiguration::Validate(bool requireRunnableListener) const {
-    if (rawServerMinThreads < 1 || rawServerMinThreads > UINT16_MAX ||
-        lpdMinThreads < 1 || lpdMinThreads > UINT16_MAX ||
-        maxPendingClients < 1 || maxPendingClients > UINT16_MAX) {
-        throw std::invalid_argument("Thread counts and maximum pending clients must be in the range 1..65535");
-    }
-    if (lpdMaxControlFileBytes == 0) {
-        throw std::invalid_argument("LPD maximum control file bytes must be at least 1");
-    }
-    if (lpdPort == 0) {
-        throw std::invalid_argument("LPD port cannot be zero");
-    }
-    if (!IsIpv4Address(listenAddress)) {
-        throw std::invalid_argument("Listen address must be a valid IPv4 address");
-    }
-    if (requireRunnableListener && rawServers.empty() && lpdQueues.empty()) {
-        throw std::invalid_argument("Configure at least one RAW printer or LPD queue");
-    }
-    if (snmpPpm && !lpdQueues.empty() && lpdPort != kDefaultLpdPort) {
-        throw std::invalid_argument("--snmp-ppm requires LPD port 515 for Windows TCP/IP port discovery");
-    }
-    std::set<uint16_t> ports;
-    for (const auto& server : rawServers) {
-        if (server.printerName.empty() || server.port == 0) {
-            throw std::invalid_argument("RAW printer name and port are required");
+    for (size_t index = 0; index < printerMap.size(); ++index) {
+        const auto& mapping = printerMap[index];
+        const auto field = "printerMap[" + std::to_string(index) + "]";
+        validateText(mapping.name, field + ".name");
+        validateText(mapping.lprQueue, field + ".lprQueue");
+        if (mapping.lprQueue.find_first_of("\r\n") != std::string::npos) {
+            throw std::invalid_argument(field + ".lprQueue: must not contain CR or LF");
         }
-        if (!ports.insert(server.port).second) {
-            throw std::invalid_argument("RAW listener ports must be unique");
+        if (!queues.insert(ascii::LowerCopy(mapping.lprQueue)).second) {
+            throw std::invalid_argument(field + ".lprQueue: queue names must be unique (case-insensitive)");
         }
-        if (!lpdQueues.empty() && server.port == lpdPort) {
-            throw std::invalid_argument("RAW and LPD listeners cannot use the same port");
-        }
-    }
-    for (size_t index = 0; index < lpdQueues.size(); ++index) {
-        const auto& mapping = lpdQueues[index];
-        if (mapping.queueName.empty() || mapping.printerName.empty() || mapping.queueName.find('=') != std::string::npos) {
-            throw std::invalid_argument("LPD queue and printer name are required; queue name cannot contain '='");
-        }
-        if (snmpPpm && (mapping.queueName.size() > 32 ||
-            !std::all_of(mapping.queueName.begin(), mapping.queueName.end(), [](unsigned char character) {
-                return character >= 0x21 && character <= 0x7e;
+        if (!ppmDisabled && (mapping.lprQueue.size() > 32 ||
+            !std::all_of(mapping.lprQueue.begin(), mapping.lprQueue.end(), [](unsigned char character) {
+                return character >= 0x21 && character <= 0x7e && character != '=';
             }))) {
-            throw std::invalid_argument("--snmp-ppm requires LPD queue names of 1 to 32 printable ASCII characters without whitespace");
+            throw std::invalid_argument(field + ".lprQueue: PPM requires 1..32 printable ASCII characters without whitespace or '='; set ppmDisabled=true to disable PPM");
         }
-        for (size_t earlier = 0; earlier < index; ++earlier) {
-            if (ascii::EqualsIgnoreCase(mapping.queueName, lpdQueues[earlier].queueName)) {
-                throw std::invalid_argument("LPD queue names must be unique (case-insensitive)");
+        if (!mapping.rawServer) continue;
+
+        const auto& server = *mapping.rawServer;
+        const auto rawField = field + ".rawServer";
+        validateText(server.listenAddress, rawField + ".listenAddress");
+        const auto address = ParseIpv4Address(server.listenAddress);
+        if (!address) {
+            throw std::invalid_argument(rawField + ".listenAddress: expected IPv4 address");
+        }
+        if (server.port == 0) {
+            throw std::invalid_argument(rawField + ".port: expected integer 1..65535");
+        }
+        if (!rawEndpoints.insert({*address, server.port}).second) {
+            throw std::invalid_argument(rawField + ": duplicate RAW endpoint " +
+                server.listenAddress + ":" + std::to_string(server.port));
+        }
+        addListener(listeners, *address, server.port, rawField, server.listenAddress);
+    }
+    // Preserve listener conflict diagnostics before applying PPM-only restrictions.
+    if (!ppmDisabled && !printerMap.empty()) {
+        for (const auto& listener : listeners) {
+            if (listener.address != *lpdAddress) {
+                throw std::invalid_argument(listener.field +
+                    ".listenAddress: PPM discovery requires all listeners to share the same listen address; set ppmDisabled=true to use different addresses");
             }
         }
     }
@@ -262,39 +133,16 @@ std::string ServiceConfiguration::LogLevelToString(ServiceLogLevel value) {
 
 ServiceLogLevel ServiceConfiguration::ParseLogLevel(const std::string& text) {
     const auto value = ascii::LowerCopy(text);
-    if (value == "trace" || value == "0") return ServiceLogLevel::Trace;
-    if (value == "debug" || value == "1") return ServiceLogLevel::Debug;
-    if (value == "info" || value == "2") return ServiceLogLevel::Info;
-    if (value == "warn" || value == "warning" || value == "3") return ServiceLogLevel::Warn;
-    if (value == "error" || value == "4") return ServiceLogLevel::Error;
-    if (value == "critical" || value == "5") return ServiceLogLevel::Critical;
-    if (value == "off" || value == "6") return ServiceLogLevel::Off;
+    if (value == "trace") return ServiceLogLevel::Trace;
+    if (value == "debug") return ServiceLogLevel::Debug;
+    if (value == "info") return ServiceLogLevel::Info;
+    if (value == "warn") return ServiceLogLevel::Warn;
+    if (value == "error") return ServiceLogLevel::Error;
+    if (value == "critical") return ServiceLogLevel::Critical;
+    if (value == "off") return ServiceLogLevel::Off;
     throw std::invalid_argument("Invalid log level: " + text);
 }
 
 bool ServiceConfiguration::IsIpv4Address(const std::string& value) {
-    size_t start = 0;
-    for (int part = 0; part < 4; ++part) {
-        const auto end = value.find('.', start);
-        if ((part == 3 && end != std::string::npos) || (part != 3 && end == std::string::npos)) {
-            return false;
-        }
-        const auto length = (end == std::string::npos ? value.size() : end) - start;
-        if (length == 0 || length > 3) return false;
-        unsigned int number = 0;
-        const auto* first = value.data() + start;
-        const auto* last = first + length;
-        const auto [position, error] = std::from_chars(first, last, number);
-        if (error != std::errc{} || position != last || number > 255) return false;
-        start = end + 1;
-    }
-    return true;
-}
-
-std::wstring QuoteWindowsCommandLineArgument(const std::wstring& value) {
-    return quoteWindowsCommandLineArgument(value);
-}
-
-std::wstring BuildWindowsCommandLine(const std::vector<std::wstring>& arguments) {
-    return buildWindowsCommandLine(arguments);
+    return ::IsIpv4Address(value);
 }

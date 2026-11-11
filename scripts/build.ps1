@@ -64,7 +64,7 @@ or Build Tools 2022 with the MSVC x86/x64 toolset is required and is not install
 
 Output:
   out\publish\<architecture>-<configuration>\PrintHub.exe
-  out\publish\<architecture>-<configuration>\PrintHubManager.exe
+  out\publish\<architecture>-<configuration>\config.example.json
 '@ | Write-Host
 }
 
@@ -233,15 +233,6 @@ function Get-NinjaPath {
     return $ninjaPath
 }
 
-function Test-MfcInstalled {
-    param([string]$VisualStudioPath)
-
-    $mfcLibrary = Get-ChildItem -Path (Join-Path $VisualStudioPath 'VC\Tools\MSVC') -Filter 'mfc*.lib' -File -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match '\\atlmfc\\lib\\x86\\' } |
-        Select-Object -First 1
-    return $null -ne $mfcLibrary
-}
-
 function Test-VcpkgRoot {
     param([string]$Candidate)
 
@@ -318,14 +309,10 @@ try {
     $preset = '{0}-{1}' -f $Architecture, $Configuration.ToLowerInvariant()
     $buildDirectory = Get-PresetBuildDirectory -RepositoryRoot $repositoryRoot -PresetName $preset
     $serviceBinaryPath = Join-Path $buildDirectory 'src\PrintHub.exe'
-    $managerBinaryPath = Join-Path $buildDirectory 'src\gui\PrintHubManager.exe'
-    $managerPdbPath = Join-Path $buildDirectory 'symbols\PrintHubManager.pdb'
+    $configExamplePath = Join-Path $repositoryRoot 'config.example.json'
     $publishDirectory = Join-Path $repositoryRoot (Join-Path 'out\publish' $preset)
 
     $visualStudio = Get-VisualStudioInstallation
-    if (-not (Test-MfcInstalled $visualStudio.InstallationPath)) {
-        Stop-Build '未找到 MFC 库。请在 Visual Studio Installer 中安装“C++ MFC for latest v143 build tools”组件。'
-    }
     $cmakePath = Get-CmakePath $visualStudio.InstallationPath
     $ninjaPath = Get-NinjaPath $visualStudio.InstallationPath
     $vcpkgRoot = Get-VcpkgRoot $repositoryRoot $visualStudio.InstallationPath
@@ -384,23 +371,25 @@ try {
         $env:VSLANG = $savedVsLang
     }
 
-    foreach ($binaryPath in @($serviceBinaryPath, $managerBinaryPath)) {
-        if (-not (Test-Path -LiteralPath $binaryPath -PathType Leaf)) {
-            Stop-Build "构建命令已完成，但未找到输出二进制：$binaryPath"
-        }
+    if (-not (Test-Path -LiteralPath $serviceBinaryPath -PathType Leaf)) {
+        Stop-Build "构建命令已完成，但未找到输出二进制：$serviceBinaryPath"
     }
 
     New-Item -ItemType Directory -Path $publishDirectory -Force | Out-Null
     Copy-Item -LiteralPath $serviceBinaryPath -Destination (Join-Path $publishDirectory 'PrintHub.exe') -Force
-    Copy-Item -LiteralPath $managerBinaryPath -Destination (Join-Path $publishDirectory 'PrintHubManager.exe') -Force
+    if (-not (Test-Path -LiteralPath $configExamplePath -PathType Leaf)) {
+        Stop-Build '未找到 config.example.json'
+    }
+    Copy-Item -LiteralPath $configExamplePath -Destination (Join-Path $publishDirectory 'config.example.json') -Force
 
     if ($configuration -eq 'Release') {
-        if (-not (Test-Path -LiteralPath $managerPdbPath -PathType Leaf)) {
-            throw "未生成 PrintHubManager PDB：$managerPdbPath"
+        $servicePdbPath = Join-Path $buildDirectory 'src\PrintHub.pdb'
+        if (-not (Test-Path -LiteralPath $servicePdbPath -PathType Leaf)) {
+            throw "未生成 PrintHub PDB：$servicePdbPath"
         }
         $symbolDirectory = Join-Path $repositoryRoot (Join-Path 'out\symbols' $preset)
         New-Item -ItemType Directory -Path $symbolDirectory -Force | Out-Null
-        Copy-Item -LiteralPath $managerPdbPath -Destination (Join-Path $symbolDirectory 'PrintHubManager.pdb') -Force
+        Copy-Item -LiteralPath $servicePdbPath -Destination (Join-Path $symbolDirectory 'PrintHub.pdb') -Force
     }
 
     Write-Info "构建成功，发布目录：$publishDirectory"
