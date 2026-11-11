@@ -198,8 +198,10 @@ void ServiceConfiguration::Validate(bool requireRunnableListener) const {
     if (snmpReject && snmpPpm) {
         throw std::invalid_argument("--snmp-reject and --snmp-ppm are mutually exclusive");
     }
-    if (rawServerMinThreads < 1 || lpdMinThreads < 1 || maxPendingClients < 1) {
-        throw std::invalid_argument("Thread counts and maximum pending clients must be at least 1");
+    if (rawServerMinThreads < 1 || rawServerMinThreads > UINT16_MAX ||
+        lpdMinThreads < 1 || lpdMinThreads > UINT16_MAX ||
+        maxPendingClients < 1 || maxPendingClients > UINT16_MAX) {
+        throw std::invalid_argument("Thread counts and maximum pending clients must be in the range 1..65535");
     }
     if (lpdMaxControlFileBytes == 0) {
         throw std::invalid_argument("LPD maximum control file bytes must be at least 1");

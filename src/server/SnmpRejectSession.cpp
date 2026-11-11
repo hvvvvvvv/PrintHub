@@ -4,6 +4,8 @@
 namespace {
 
 using snmp::ber::EncodeTlv;
+using snmp::ber::IsValidIntegerContents;
+using snmp::ber::IsValidOidContents;
 using snmp::ber::Reader;
 using snmp::ber::Tlv;
 
@@ -36,6 +38,7 @@ bool parseVarBinds(std::string_view requestVarBinds, bool getNext, std::string* 
         Tlv value{};
         if (!fields.ReadRaw(objectIdentifier)
             || objectIdentifier.tag != kObjectIdentifier
+            || !IsValidOidContents(objectIdentifier.value)
             || !fields.Read(value)
             || value.tag != 0x05 || !value.value.empty()
             || !fields.Done()) {
@@ -90,8 +93,11 @@ std::optional<std::string> SnmpRejectSession::Handle(std::string_view request) {
         || !pdu.ReadRaw(requestVarBinds)
         || !pdu.Done()
         || requestId.tag != kInteger
+        || !IsValidIntegerContents(requestId.value)
         || requestErrorStatus.tag != kInteger
+        || !IsValidIntegerContents(requestErrorStatus.value)
         || requestErrorIndex.tag != kInteger
+        || !IsValidIntegerContents(requestErrorIndex.value)
         || requestVarBinds.tag != kSequence
         || requestVarBinds.value.empty()) {
         return std::nullopt;

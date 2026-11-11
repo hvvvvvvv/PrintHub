@@ -8,6 +8,36 @@
 
 namespace snmp::ber {
 
+inline bool IsValidIntegerContents(std::string_view contents) {
+    if (contents.empty() || contents.size() > 4) {
+        return false;
+    }
+    if (contents.size() > 1) {
+        const auto first = static_cast<std::uint8_t>(contents.front());
+        const auto second = static_cast<std::uint8_t>(contents[1]);
+        if ((first == 0 && (second & 0x80U) == 0)
+            || (first == 0xFF && (second & 0x80U) != 0)) {
+            return false; // BER INTEGER uses the shortest signed representation.
+        }
+    }
+    return true;
+}
+
+inline bool IsValidOidContents(std::string_view contents) {
+    if (contents.empty()) {
+        return false;
+    }
+    bool atSubidentifierStart = true;
+    for (const auto character : contents) {
+        const auto byte = static_cast<std::uint8_t>(character);
+        if (atSubidentifierStart && byte == 0x80) {
+            return false; // A base-128 subidentifier cannot have leading zeroes.
+        }
+        atSubidentifierStart = (byte & 0x80U) == 0;
+    }
+    return atSubidentifierStart; // The last subidentifier must be terminated.
+}
+
 struct Tlv {
     std::uint8_t tag{};
     std::string_view value;

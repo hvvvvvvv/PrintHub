@@ -115,17 +115,31 @@ void testMessageSizeBoundary() {
         "Oversized garbage request");
 }
 
-void testCurrentPrimitiveValidationGaps() {
-    // The reject-only parser currently checks primitive tags, not OID contents
-    // or INTEGER representations. Keep that observed behavior explicit and
-    // report it rather than pretending malformed primitives are rejected.
-    for (const auto& oid : std::vector<std::string>{"", hex("2b 81"), hex("2b 80 01")}) {
-        requireResponse(SnmpRejectSession::Handle(packet(1, 0xA0, binding(oid))),
-            packet(1, 0xA2, binding(oid, 0x80)), "Current malformed OID acceptance");
-    }
-    for (const auto& id : std::vector<std::string>{"", hex("00 12"), hex("01 00 00 00 00")}) {
-        requireResponse(SnmpRejectSession::Handle(packet(1, 0xA0, binding(kDescrWire), id)),
-            packet(1, 0xA2, binding(kDescrWire, 0x80), id), "Current malformed INTEGER acceptance");
+void testInvalidPrimitiveContents() {
+    const std::vector<std::string> invalidOids{
+        "", hex("81"), hex("2b 81"), hex("80 01"), hex("2b 80 01")
+    };
+    const std::vector<std::string> invalidIntegers{
+        "", hex("00 12"), hex("ff 80"), hex("01 00 00 00 00")
+    };
+    for (const std::uint8_t version : {0, 1}) {
+        for (const std::uint8_t pdu : {0xA0, 0xA1}) {
+            for (const auto& oid : invalidOids) {
+                require(!SnmpRejectSession::Handle(packet(version, pdu, binding(oid))),
+                    "Malformed OID must be silently dropped");
+            }
+            const auto body = wireTlv(0x02, bytes({version})) + wireTlv(0x04, "public");
+            for (const auto& contents : invalidIntegers) {
+                for (size_t field = 0; field < 3; ++field) {
+                    std::string fields[]{hex("02 01 12"), hex("02 01 00"), hex("02 01 00")};
+                    fields[field] = wireTlv(0x02, contents);
+                    const auto request = wireTlv(0x30, body + wireTlv(pdu,
+                        fields[0] + fields[1] + fields[2] + wireTlv(0x30, binding(kDescrWire))));
+                    require(!SnmpRejectSession::Handle(request),
+                        "Malformed INTEGER must be silently dropped, field " + std::to_string(field));
+                }
+            }
+        }
     }
 }
 
@@ -137,7 +151,7 @@ int main() {
         runTest("original TLV preservation", testOriginalTlvPreservation);
         runTest("malformed and unsupported requests", testMalformedAndUnsupportedRequests);
         runTest("message size boundary", testMessageSizeBoundary);
-        runTest("primitive validation characterization", testCurrentPrimitiveValidationGaps);
+        runTest("invalid primitive contents", testInvalidPrimitiveContents);
     } catch (const std::exception& error) {
         std::cerr << "SNMP reject session tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;

@@ -303,18 +303,46 @@ void testDisconnectAndBackendFailures() {
     }
 }
 
-void testSignedCountCurrentBehavior() {
-    // parseFileCommand uses stoull, which accepts a leading sign. This is a
-    // characterization of a suspected validation defect, not a desired syntax.
-    for (const auto* count : {"-1", "+1"}) {
+void testInvalidCountsRejected() {
+    const std::string control = "fdfA\n";
+    const auto prefix = beginJob() + file(2, "cfA", control);
+    const std::string unread("x\0unread", 8);
+    // The first space separates count and name, so a trailing space cannot be
+    // part of the count here; a leading space in the file name is covered by
+    // the file-set validation tests instead.
+    const std::vector<std::string> invalid{
+        "", "-1", "+1", " 1", "\t1", "1\t", "--1", "1x",
+        "18446744073709551616", bytes({0xB2}), std::string("1\0", 2)
+    };
+    for (size_t index = 0; index < invalid.size(); ++index) {
+        LpdTransport transport(prefix + fileHeader(3, invalid[index], "dfA") + unread);
+        JobFactory factory;
+        LpdSession session(factory, resolve);
+        session.Run(transport);
+        const auto& job = onlyJob(factory);
+        requireAbandoned(job);
+        require(job.data.empty(), "Rejected count must not write any data to the job");
+        require(transport.responses == std::string{kAck, kAck, kAck, kNak},
+            "Invalid count ACK/NAK sequence, case " + std::to_string(index));
+        require(transport.exactReads == std::vector<size_t>{control.size(), 1} &&
+            transport.readToEndCalls == 0 && transport.payloadBytesRead == control.size() + 1 &&
+            transport.readLineCalls == 3 && transport.Remaining() == unread.size(),
+            "Rejected file body must remain unread, case " + std::to_string(index));
+    }
+}
+
+void testLeadingZeroCounts() {
+    for (const auto* count : {"01", "0001"}) {
         LpdTransport transport(beginJob() + file(2, "cfA", "fdfA\n") +
-            fileHeader(3, count, "dfA") + (std::string(count) == "-1" ? "x" : std::string("x\0", 2)));
+            fileHeader(3, count, "dfA") + std::string("x\0", 2));
         JobFactory factory;
         LpdSession session(factory, resolve);
         session.Run(transport);
         requireCommitted(onlyJob(factory), "x");
-        require(transport.responses == std::string(std::string(count) == "-1" ? 4 : 5, kAck),
-            "Current signed-count acceptance changed");
+        require(transport.responses == std::string(5, kAck) && transport.Remaining() == 0,
+            "Leading zero count must retain exact-count ACK sequence");
+        require(transport.exactReads == std::vector<size_t>{5, 1, 1, 1} && transport.readToEndCalls == 0,
+            "Leading zero count must read one data byte and its terminator");
     }
 }
 
@@ -330,7 +358,8 @@ int main() {
         runTest("invalid commands and queue mappings", testInvalidCommandsAndMappings);
         runTest("file-set validation", testFileSetValidation);
         runTest("disconnect and backend failures", testDisconnectAndBackendFailures);
-        runTest("signed count characterization", testSignedCountCurrentBehavior);
+        runTest("invalid counts rejected", testInvalidCountsRejected);
+        runTest("leading zero counts", testLeadingZeroCounts);
     } catch (const std::exception& error) {
         std::cerr << "LPD session tests failed: " << error.what() << '\n';
         return EXIT_FAILURE;

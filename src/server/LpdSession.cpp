@@ -62,6 +62,9 @@ std::optional<FileCommand> parseFileCommand(const std::string& command) {
         return std::nullopt;
     }
     const auto countText = command.substr(kFirstCommandArgumentIndex, separator - kFirstCommandArgumentIndex);
+    if (countText.empty() || countText.find_first_not_of("0123456789") != std::string::npos) {
+        return std::nullopt;
+    }
     uint64_t size = 0;
     try {
         size_t consumed = 0;

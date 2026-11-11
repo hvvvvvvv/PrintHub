@@ -10,6 +10,59 @@ namespace {
 using snmp::ber::Reader;
 using snmp::ber::Tlv;
 
+void testIntegerContentsValidation() {
+    for (unsigned int value = 0; value <= 0xFF; ++value) {
+        require(snmp::ber::IsValidIntegerContents(bytes({static_cast<std::uint8_t>(value)})),
+            "Every single-byte signed INTEGER must be valid");
+    }
+    const std::vector<std::string> valid{
+        bytes({0x00, 0x80}), bytes({0x00, 0xFF}), bytes({0x01, 0x00}),
+        bytes({0x7F, 0xFF}), bytes({0x80, 0x00}), bytes({0xFF, 0x7F}), bytes({0xFF, 0x00}),
+        bytes({0x00, 0x80, 0x00}), bytes({0xFF, 0x7F, 0xFF}),
+        bytes({0x7F, 0xFF, 0xFF, 0xFF}), bytes({0x80, 0x00, 0x00, 0x00}),
+        bytes({0x00, 0x80, 0x00, 0x00}), bytes({0xFF, 0x7F, 0xFF, 0xFF})
+    };
+    for (size_t index = 0; index < valid.size(); ++index) {
+        require(snmp::ber::IsValidIntegerContents(valid[index]),
+            "Valid minimal INTEGER rejected, case " + std::to_string(index));
+    }
+    const std::vector<std::string> invalid{
+        "", bytes({0x00, 0x00}), bytes({0x00, 0x12}), bytes({0x00, 0x7F}),
+        bytes({0xFF, 0x80}), bytes({0xFF, 0xFF}),
+        bytes({0x00, 0x00, 0x80}), bytes({0xFF, 0xFF, 0x7F}),
+        bytes({0x00, 0x7F, 0xFF, 0xFF}), bytes({0xFF, 0x80, 0x00, 0x00}),
+        bytes({0x01, 0x00, 0x00, 0x00, 0x00}), bytes({0x00, 0x80, 0x00, 0x00, 0x00}),
+        bytes({0xFF, 0x7F, 0xFF, 0xFF, 0xFF})
+    };
+    for (size_t index = 0; index < invalid.size(); ++index) {
+        require(!snmp::ber::IsValidIntegerContents(invalid[index]),
+            "Invalid INTEGER accepted, case " + std::to_string(index));
+    }
+}
+
+void testOidContentsValidation() {
+    const std::vector<std::string> valid{
+        bytes({0x00}), bytes({0x2B}), bytes({0x7F}), bytes({0x81, 0x00}), bytes({0xFF, 0x7F}),
+        bytes({0x81, 0x80, 0x00}), bytes({0x2B, 0x00}), bytes({0x2B, 0x81, 0x00}),
+        bytes({0x2B, 0x81, 0x80, 0x00, 0x00, 0xFF, 0x7F}),
+        bytes({0x2B, 0x06, 0x01, 0x02, 0x01, 0x01, 0x01, 0x00})
+    };
+    for (size_t index = 0; index < valid.size(); ++index) {
+        require(snmp::ber::IsValidOidContents(valid[index]),
+            "Valid base-128 OID rejected, case " + std::to_string(index));
+    }
+    const std::vector<std::string> invalid{
+        "", bytes({0x80}), bytes({0x81}), bytes({0xFF}), bytes({0x81, 0x80}),
+        bytes({0x2B, 0x81}), bytes({0x2B, 0x81, 0x80}),
+        bytes({0x80, 0x00}), bytes({0x80, 0x01}), bytes({0x2B, 0x80, 0x01}),
+        bytes({0x2B, 0x80, 0x81, 0x00}), bytes({0x81, 0x00, 0x80, 0x01})
+    };
+    for (size_t index = 0; index < invalid.size(); ++index) {
+        require(!snmp::ber::IsValidOidContents(invalid[index]),
+            "Invalid base-128 OID accepted, case " + std::to_string(index));
+    }
+}
+
 void testLengthEncodingAndRoundTrip() {
     struct Example {
         size_t length;
@@ -123,6 +176,8 @@ void testDoneDescribesCursorNotValidity() {
 
 int main() {
     try {
+        runTest("INTEGER contents validation", testIntegerContentsValidation);
+        runTest("OID contents validation", testOidContentsValidation);
         runTest("length encoding and round trip", testLengthEncodingAndRoundTrip);
         runTest("sequential reads and raw capture", testReaderSequenceAndRawCapture);
         runTest("malformed and truncated inputs", testMalformedAndTruncatedInputs);

@@ -222,14 +222,25 @@ void testNumericBoundariesAndValidate() {
         mutate(value);
         requireThrows([&] { value.Validate(false); }, "Validate(false) skipped a non-listener invariant");
     }
-    // Characterization: Validate only enforces lower bounds for these int fields,
-    // whereas Parse enforces UINT16_MAX. See the delivery report.
-    ServiceConfiguration wide;
-    wide.rawServers = {{"P", 65535}};
-    wide.rawServerMinThreads = wide.lpdMinThreads = wide.maxPendingClients = (std::numeric_limits<int>::max)();
-    wide.Validate();
-    requireThrows([&] { ServiceConfiguration::Parse(wide.ToArguments()); },
-        "Current Validate/Parse upper-bound mismatch changed");
+    for (const auto field : {&ServiceConfiguration::rawServerMinThreads,
+        &ServiceConfiguration::lpdMinThreads, &ServiceConfiguration::maxPendingClients}) {
+        for (const auto limit : {65536, (std::numeric_limits<int>::max)()}) {
+            ServiceConfiguration value;
+            value.rawServers = {{"P", 9100}};
+            value.*field = limit;
+            requireThrows([&] { value.Validate(); }, "Validate accepted an integer above UINT16_MAX");
+            requireThrows([&] { value.Validate(false); }, "Validate(false) skipped the integer upper bound");
+            requireThrows([&] { value.ToArguments(); }, "Compact serialization accepted an oversized integer");
+            requireThrows([&] { value.ToArguments(Format::Explicit); },
+                "Explicit serialization accepted an oversized integer");
+        }
+    }
+    ServiceConfiguration upper;
+    upper.rawServers = {{"P", 65535}};
+    upper.rawServerMinThreads = upper.lpdMinThreads = upper.maxPendingClients = 65535;
+    upper.Validate();
+    requireSame(ServiceConfiguration::Parse(upper.ToArguments()), upper);
+    requireSame(ServiceConfiguration::Parse(upper.ToArguments(Format::Explicit)), upper);
 }
 
 void testIpv4AndLogLevels() {
