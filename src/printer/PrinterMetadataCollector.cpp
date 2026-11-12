@@ -209,8 +209,7 @@ void PrinterMetadataCollector::LogDiagnostics() const {
         }
         for (std::size_t i = 0; i < count; ++i) {
             const auto& entry = entries[i];
-            spdlog::log(lane == 0 ? spdlog::level::debug : spdlog::level::info,
-                "Printer {} index {}: {}", kLaneNames[lane], entry.printer, entry.text.data());
+            spdlog::debug("Printer {} index {}: {}", kLaneNames[lane], entry.printer, entry.text.data());
         }
     }
 }

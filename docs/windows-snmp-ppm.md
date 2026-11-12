@@ -196,12 +196,12 @@ USB 脱机、找不到设备、共享/权限/读取错误等保留为可重试�
 Bidi 与 USB 备用路径共用身份线程。如果 Bidi 或其清理不返回，暂时无法执行 USB
 或采集其他队列的身份；状态采集仍可运行。SNMP 始终只读缓存。
 
-身份诊断默认写入 **info** 日志。可将以下内容保存为 `config.json`，并将 `name`
-替换为实际 USB 打印队列名称；`logLevel` 缺省即为 `"info"`：
+状态和身份诊断默认写入 **debug** 日志，默认的 `"info"` 级别不会输出。需要采集身份诊断时，
+将 `logLevel` 设为 `"debug"`，并将 `name` 替换为实际 USB 打印队列名称：
 
 ```json
 {
-  "logLevel": "info",
+  "logLevel": "debug",
   "printerMap": [
     {
       "name": "实际 USB 打印队列",
@@ -234,7 +234,7 @@ Bidi 与 USB 备用路径共用身份线程。如果 Bidi 或其清理不返回�
 - `identity/source`：成功来源（Bidi/USB）、合法 ID 长度及缓存策略。
 
 采集线程不直接写日志。每个线程在内存中保留最近 `64` 条、每条最多 `511` 字节
-的诊断，由服务线程定期读取；状态阶段写入 debug 日志，停机超期会记录最后阶段。
+的诊断，由服务线程定期读取；状态和身份诊断都写入 debug 日志，停机超期会记录最后阶段。
 普通日志不记录完整 IEEE-1284 ID、USB 序列号路径、community 或报文。
 
 ## 协议与兼容性
@@ -246,4 +246,4 @@ SNMP 支持 v1/v2c 的 Get、GetNext，以及 v2c GetBulk；community 固定为 
 项目以 Windows 7 为编译目标；原生端口发现、选择设备和参数填充在 Windows 11 上
 验证过，Windows 7 的向导和运行兼容性仍待验证。真实 USB 设备身份获取、非空
 Device ID 自动匹配驱动尚未完成实机验证。
-验证 USB 路径时，可使用前文的 info 日志查看获取阶段与错误码。
+验证 USB 路径时，可使用前文的 debug 日志查看获取阶段与错误码。
