@@ -10,6 +10,12 @@ PrintHub 是一个仅支持 Windows 的网络打印服务，可将网络客户�
 - 内置 Web 面板：通过 token 鉴权查看状态、日志和编辑配置，保存后热重载。
 - 可选的 SNMP PPM MIB 发现功能，用于 Windows 添加标准 TCP/IP 打印机端口。
 
+## 界面预览
+
+![PrintHub Web 管理面板](docs/images/web-ui.png)
+
+*界面示意图，使用示例配置。* 内置 Web 面板可查看运行状态和最近日志、编辑打印机映射与全局设置；保存后立即热应用，无需重启服务。
+
 ## 下载
 
 从 [GitHub Releases](https://github.com/hvvvvvvv/PrintHub/releases/latest) 下载与系统架构相符的发布包：
