@@ -1,4 +1,4 @@
-﻿# CMakeList.txt: PrintHub 的 CMake 项目，在此处包括源代码并定义
+# CMakeList.txt: PrintHub 的 CMake 项目，在此处包括源代码并定义
 # 项目特定的逻辑。
 #
 cmake_minimum_required(VERSION 3.12)
@@ -10,7 +10,7 @@ if (POLICY CMP0141)
 endif()
 cmake_policy(SET CMP0091 NEW)
 
-project (PrintHub VERSION 1.0.2)
+project (PrintHub VERSION 2.0.0)
 # The CLI build selects an installed MSVC language and UTF-8 output. Override a
 # localized prefix cached with the wrong code page: otherwise Ninja silently
 # misses header dependencies and can link incompatible stale object files.

@@ -211,7 +211,7 @@ curl.exe -H "X-PrintHub-Token: <token>" http://127.0.0.1:8323/api/printers
 
 ```json
 {
-  "version": "1.0.2",
+  "version": "2.0.0",
   "configPath": "C:\\PrintHub\\config.json",
   "mode": "service",
   "startedAt": "2026-11-11T19:00:00Z",

@@ -236,7 +236,7 @@ PrintHub.exe --version
 
 `--service ACTION` 与 `--service=ACTION` 等价。缺少或使用未知 action 时会报错，
 并列出 `install`、`uninstall`、`start`、`stop`、`restart`。命令用法错误退出码为
-`1`；帮助和版本命令退出码为 `0`。`--version` 只输出一行 `1.0.2`。
+`1`；帮助和版本命令退出码为 `0`。`--version` 只输出一行 `2.0.0`。
 日志保存在可执行文件旁的 `logs` 目录。
 
 三个 Web 参数支持 `--web-*=value` 等号形式，同一参数重复指定会报错；Web 端口范围
